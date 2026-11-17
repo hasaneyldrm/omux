@@ -167,6 +167,8 @@ private struct ProjectMark: View {
           HStack(spacing: 9) {
             Text(Self.initials(group.name))
                 .font(.system(size: 11, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .foregroundStyle(hue)
                 .frame(width: 30, height: 30)
                 .background {
@@ -225,8 +227,10 @@ private struct ProjectMark: View {
         return hues[Int(sum % UInt32(hues.count))]
     }
 
-    /// "acme-web" → "AW", "infra" → "IN", "My Project" → "MP".
+    /// "acme-web" → "AW", "infra" → "IN", "My Project" → "MP". A name that is already an
+    /// abbreviation in capitals stays whole up to three characters: "ITB", not "IT".
     static func initials(_ name: String) -> String {
+        if (2...3).contains(name.count), name.allSatisfy({ $0.isUppercase || $0.isNumber }) { return name }
         let words = name.split { !$0.isLetter && !$0.isNumber }.filter { !$0.isEmpty }
         let letters = words.count >= 2 ? words.prefix(2).compactMap(\.first).map(String.init).joined() : String(name.filter { $0.isLetter || $0.isNumber }.prefix(2))
         return letters.isEmpty ? "·" : letters.uppercased()
