@@ -1660,10 +1660,20 @@ final class Store: ObservableObject {
     }
 
     /// A new project, folder first, made right inside the workspace.
+    /// Cancelling the folder panel makes nothing; a folder that is already a project brings
+    /// that project into the workspace instead of opening it twice.
     func newGroup(inWorkspace name: String) {
+        guard let folder = Self.chooseFolder(prompt: "Choose the project's folder") else { return }
+        if let existing = groups.first(where: { Self.samePath($0.directory, folder) }) {
+            setWorkspace(existing.id, name)
+            if let tab = existing.tabs.first { selectedTabID = tab.id }
+            RailState.shared.showWorkspace(name, in: self)
+            return
+        }
         let before = Set(groups.map(\.id))
-        newGroup()
+        openFolder(folder)
         for index in groups.indices where !before.contains(groups[index].id) { groups[index].workspace = name }
+        RailState.shared.shownWorkspace = name
     }
 
     /// A new workspace, made at once under a name that is free, its name then typed in place in

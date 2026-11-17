@@ -204,9 +204,6 @@ struct Sidebar: View {
             Spacer(minLength: 0).frame(height: 1)
             if let name = shownWorkspace {
                 RailWorkspaceTitle(name: name)
-                if store.projects(inWorkspace: name).isEmpty {
-                    WorkspaceSetup(name: name)
-                }
             } else if rail, let group = shownGroup {
                 RailProjectTitle(group: group)
             }
@@ -218,6 +215,11 @@ struct Sidebar: View {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(shown) { row in
                         rowView(row, all: all)
+                    }
+                    // Inside the scroll view, not above it: a long list of projects to bring in
+                    // must scroll, never push the window's content out of its frame.
+                    if let name = shownWorkspace {
+                        WorkspaceSetup(name: name, empty: store.projects(inWorkspace: name).isEmpty)
                     }
                     // Below the last row: a session goes last in the last project shown; in a
                     // workspace, a project goes last in it.

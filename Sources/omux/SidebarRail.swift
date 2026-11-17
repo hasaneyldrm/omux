@@ -67,7 +67,7 @@ struct ProjectRail: View {
             // Drawn as a project holding every session of the workspace, so its dot tells the
             // most pressing state among all of them.
             ProjectMark(group: TabGroup(name: name, tabs: projects.flatMap(\.tabs)), shown: shownWorkspace == name, named: open, quiet: quiet,
-                        detail: projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects", stack: max(projects.count, 1)) {
+                        detail: projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects", stack: max(projects.count, 1), button: true) {
                 pickWorkspace(name)
             }
             .contextMenu { WorkspaceMenu(name: name) }
@@ -219,6 +219,9 @@ struct ProjectMark: View {
     /// A workspace's number of projects: the mark is drawn as a stack of that many cards, which
     /// fan out under the pointer and while the workspace is on show. 0 for a project.
     var stack = 0
+    /// Clicked as a Button rather than through a tap gesture: for a mark that is never dragged
+    /// (a workspace's), where a Button's click is the dependable one.
+    var button = false
     let action: () -> Void
     @State private var hovering = false
     /// Set once the mark is on screen, so a workspace's cards slide out from behind it.
@@ -233,8 +236,9 @@ struct ProjectMark: View {
         let state: Color? = waiting > 0 ? Palette.needs : failed > 0 ? Palette.error : working > 0 ? Palette.working : nil
         let hue = Self.hue(group.name)
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
-        // Not a Button: on macOS a button keeps a drag from starting, and marks are dragged.
-          HStack(spacing: 9) {
+        // Not a Button for a project: on macOS a button keeps a drag from starting, and project
+        // marks are dragged. A workspace's mark isn't, and is one.
+        let face = HStack(spacing: 9) {
             VStack(spacing: 2.5) {
                 Text(Self.initials(group.name))
                     .font(.system(size: 11, weight: .bold))
@@ -285,8 +289,13 @@ struct ProjectMark: View {
             }
           }
           .contentShape(Rectangle())
-        .onTapGesture(perform: action)
-        .accessibilityAddTraits(.isButton)
+        Group {
+            if button {
+                Button(action: action) { face }.buttonStyle(.plain)
+            } else {
+                face.onTapGesture(perform: action).accessibilityAddTraits(.isButton)
+            }
+        }
         .onHover { over in withAnimation(.spring(response: 0.28, dampingFraction: 0.62)) { hovering = over } }
         .animation(.spring(response: 0.32, dampingFraction: 0.64), value: shown)
         .onAppear {
@@ -417,16 +426,14 @@ struct RailWorkspaceTitle: View {
                         .onTapGesture(count: 2) { store.renamingWorkspace = name }
                         .help("Double-click to rename")
                 }
-                HStack(spacing: 10) {
-                    Text(projects.count == 1 ? "1 project" : "\(projects.count) projects")
-                        .foregroundStyle(.tertiary)
-                    if live + stopped > 0 {
-                        SessionPips(live: live, stopped: stopped, max: 8, size: 5)
-                        Text(SessionPips.text(live: live, stopped: stopped)).foregroundStyle(.secondary)
-                    }
-                }
-                .font(.system(size: 10.5))
-                .lineLimit(1)
+                // One line of text: the project count used to sit beside pips and a session
+                // count and was the part cut short ("2 proje…").
+                Text(([projects.count == 1 ? "1 project" : "\(projects.count) projects"]
+                      + (live + stopped > 0 ? [SessionPips.text(live: live, stopped: stopped)] : [])).joined(separator: " · "))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
         .id(name)
@@ -485,40 +492,86 @@ struct WorkspaceNameField: View {
 
 /// What a workspace with no project yet shows under its name: the projects there are, to bring
 /// in with a click, and a way to make a new one. All in the list, nothing over the app.
+/// Shown at the end of a workspace's list. Empty, the workspace lists the projects there are to
+/// bring in at once. With projects, the same list folds behind one "Add project" row, so a
+/// workspace can always grow from where it is shown, not only from a context menu.
+/// It lives inside the list's scroll view and nothing in it takes a fixed height: a column's
+/// minimum height is measured at a narrow width, and wrapped text held at its full height there
+/// made the sidebar taller than the window and pushed the whole window's content out of view.
 struct WorkspaceSetup: View {
     @EnvironmentObject var store: Store
     let name: String
+    let empty: Bool
+    @State private var expanded = false
 
     var body: some View {
-        let others = store.groups.filter { $0.workspace != name }
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Bring projects in")
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            if others.isEmpty {
-                Text("No other projects yet.").font(.system(size: 11)).foregroundStyle(.tertiary)
+        // Projects on their own first: they are the likely ones to bring in.
+        let others = store.groups.filter { $0.workspace == nil } + store.groups.filter { $0.workspace != nil && $0.workspace != name }
+        let open = empty || expanded
+        VStack(alignment: .leading, spacing: 6) {
+            if empty {
+                Text("Add projects to this workspace")
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 6)
+                Text("Click a project to move it here.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 2)
+            } else {
+                SetupButton(title: "Add project", systemImage: expanded ? "chevron.down" : "plus") {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { expanded.toggle() }
+                }
             }
-            VStack(spacing: 2) {
-                ForEach(others) { group in AddProjectRow(group: group, workspace: name) }
+            if open {
+                VStack(spacing: 1) {
+                    ForEach(others) { group in AddProjectRow(group: group, workspace: name) }
+                }
+                SetupButton(title: "Open a folder as a project…", systemImage: "folder.badge.plus") {
+                    store.newGroup(inWorkspace: name)
+                }
+                if empty {
+                    SetupButton(title: "Delete workspace", systemImage: "trash", tint: .red) {
+                        store.ungroupWorkspace(name)
+                    }
+                }
             }
-            Button {
-                store.newGroup(inWorkspace: name)
-            } label: {
-                Label("New project from a folder…", systemImage: "folder.badge.plus").font(.system(size: 11.5))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.top, 4)
-            Text("You can also drag a project or a session onto this workspace's mark on the rail, or onto its name above.")
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 2)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
+        .padding(.horizontal, 8)
+        .padding(.top, empty ? 10 : 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: name) { _, _ in expanded = false }
+    }
+}
+
+/// A quiet full-width action in a workspace's list.
+private struct SetupButton: View {
+    let title: String
+    let systemImage: String
+    var tint: Color? = nil
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) { label }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+    }
+
+    private var label: some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10.5, weight: .semibold))
+                .frame(width: 20, height: 20)
+            Text(title).font(.system(size: 12)).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(tint.map { AnyShapeStyle($0.opacity(hovering ? 1 : 0.75)) } ?? AnyShapeStyle(hovering ? .primary : .secondary))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(.primary.opacity(hovering ? 0.06 : 0)))
+        .contentShape(Rectangle())
     }
 }
 
@@ -531,6 +584,15 @@ private struct AddProjectRow: View {
 
     var body: some View {
         let hue = ProjectMark.hue(group.name)
+        Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { store.setWorkspace(group.id, workspace) }
+        } label: { row(hue) }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Move \(group.name) into \(workspace)")
+    }
+
+    private func row(_ hue: Color) -> some View {
         HStack(spacing: 8) {
             Text(ProjectMark.initials(group.name))
                 .font(.system(size: 8.5, weight: .bold))
@@ -550,9 +612,6 @@ private struct AddProjectRow: View {
         .padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(.primary.opacity(hovering ? 0.06 : 0)))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .onTapGesture { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { store.setWorkspace(group.id, workspace) } }
-        .help("Move \(group.name) into \(workspace)")
     }
 }
 

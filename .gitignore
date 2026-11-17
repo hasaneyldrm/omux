@@ -16,3 +16,6 @@ DerivedData/
 *.log
 .wrangler/
 .build-al2*/
+
+# The signing identity build.sh picked once, kept so macOS permissions survive rebuilds
+.signing-identity

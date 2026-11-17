@@ -84,9 +84,30 @@ if [[ "$MODE" == "install" ]]; then
   # Developer ID certificate is the one releases carry, so a dev build and an update can replace
   # each other in /Applications without Accessibility, Screen Recording and folder grants
   # starting over; without it, the Apple Development certificate, then an ad-hoc signature.
+  # macOS ties every grant to the certificate that signed the app, so the identity must be the
+  # same on every build. With several Apple Development certificates in the keychain, "the
+  # first one" changes whenever one is added or renewed, and each change asks for every
+  # permission again. So the identity is chosen once and kept in .signing-identity (not
+  # committed): OMUX_SIGN_IDENTITY if set, else the one the installed app already carries (its
+  # grants stay), else Developer ID, else the first Apple Development certificate.
   IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
-  IDENTITY=$(echo "$IDENTITIES" | grep "Developer ID Application" | head -1 | awk '{print $2}' || true)
+  has_identity() { [[ -n "$1" ]] && echo "$IDENTITIES" | grep -q "$1"; }
+  IDENTITY=${OMUX_SIGN_IDENTITY:-}
+  if [[ -z "$IDENTITY" && -f .signing-identity ]] && has_identity "$(cat .signing-identity)"; then
+    IDENTITY=$(cat .signing-identity)
+  fi
+  if [[ -z "$IDENTITY" && -d "/Applications/$NAME.app" ]]; then
+    INSTALLED=$(codesign -dvv "/Applications/$NAME.app" 2>&1 | grep -m1 "^Authority=" | cut -d= -f2- || true)
+    [[ -n "$INSTALLED" ]] && IDENTITY=$(echo "$IDENTITIES" | grep -F "\"$INSTALLED\"" | head -1 | awk '{print $2}' || true)
+  fi
+  [[ -z "$IDENTITY" ]] && IDENTITY=$(echo "$IDENTITIES" | grep "Developer ID Application" | head -1 | awk '{print $2}' || true)
   [[ -z "$IDENTITY" ]] && IDENTITY=$(echo "$IDENTITIES" | grep "Apple Development" | head -1 | awk '{print $2}' || true)
+  if [[ -n "$IDENTITY" ]]; then
+    echo "$IDENTITY" > .signing-identity
+    echo "Signing with $(echo "$IDENTITIES" | grep -m1 "$IDENTITY" | sed 's/.*"\(.*\)"/\1/')"
+  else
+    echo "No signing certificate: signing ad hoc, so macOS will ask for permissions again after every build." >&2
+  fi
   sign_sparkle "${IDENTITY:--}"
   codesign --force --sign "${IDENTITY:--}" "$APP/Contents/Resources/bin/omux" 2>&1 | without "replacing existing signature"
   codesign --force --sign "${IDENTITY:--}" "$APP" 2>&1 | without "replacing existing signature"
