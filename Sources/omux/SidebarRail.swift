@@ -71,6 +71,11 @@ struct ProjectRail: View {
                 .contextMenu { GroupMenu(group: group) }
                 // Dragged onto a workspace's mark, the project goes into that workspace.
                 .onDrag { ProjectDrag.provider(group.id) }
+                // A session dropped here moves into this project.
+                .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(group.name), target: $dropTarget) { item in
+                    guard case .session(let id) = item else { return }
+                    store.moveTab(id, toGroup: group.id)
+                })
         case .workspace(let name, let projects):
             // Drawn as a project holding every session of the workspace, so its dot tells the
             // most pressing state among all of them.
@@ -80,14 +85,17 @@ struct ProjectRail: View {
                 if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { pick(latest) }
             }
             .contextMenu { WorkspaceMenu(name: name) }
-            .scaleEffect(dropTarget == name ? 1.14 : 1)
-            .shadow(color: ProjectMark.hue(name).opacity(dropTarget == name ? 0.6 : 0), radius: 8)
-            .animation(.spring(response: 0.25, dampingFraction: 0.55), value: dropTarget)
-            .onDrop(of: [UTType.plainText], isTargeted: Binding(get: { dropTarget == name }, set: { over in
-                if over { dropTarget = name } else if dropTarget == name { dropTarget = nil }
-            })) { providers in
-                ProjectDrag.receive(providers) { id in store.setWorkspace(id, name) }
-            }
+            // A project dropped here joins the workspace; a session goes to the project of it
+            // last worked in.
+            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget) { item in
+                switch item {
+                case .project(let id):
+                    store.setWorkspace(id, name)
+                case .session(let id):
+                    let projects = store.projects(inWorkspace: name)
+                    if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { store.moveTab(id, toGroup: latest.id) }
+                }
+            })
         }
     }
 
@@ -229,7 +237,7 @@ struct ProjectMark: View {
         let state: Color? = waiting > 0 ? Palette.needs : failed > 0 ? Palette.error : working > 0 ? Palette.working : nil
         let hue = Self.hue(group.name)
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
-        Button(action: action) {
+        // Not a Button: on macOS a button keeps a drag from starting, and marks are dragged.
           HStack(spacing: 9) {
             Text(Self.initials(group.name))
                 .font(.system(size: 11, weight: .bold))
@@ -286,8 +294,8 @@ struct ProjectMark: View {
             }
           }
           .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        .onTapGesture(perform: action)
+        .accessibilityAddTraits(.isButton)
         .onHover { over in withAnimation(.spring(response: 0.28, dampingFraction: 0.62)) { hovering = over } }
         .animation(.spring(response: 0.32, dampingFraction: 0.64), value: shown)
         .onAppear {
@@ -569,13 +577,42 @@ enum ProjectDrag {
         NSItemProvider(object: (prefix + id.uuidString) as NSString)
     }
 
-    /// Calls `take` on the main thread with the dropped project's id; false when none is in it.
-    static func receive(_ providers: [NSItemProvider], take: @escaping @MainActor (UUID) -> Void) -> Bool {
+    /// What a drop on the rail carries: a project, or a session dragged from the list.
+    enum Item { case project(UUID), session(UUID) }
+
+    /// Calls `take` on the main thread with what was dropped; false when it is neither.
+    static func receive(_ providers: [NSItemProvider], take: @escaping @MainActor (Item) -> Void) -> Bool {
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
         _ = provider.loadObject(ofClass: NSString.self) { object, _ in
-            guard let text = object as? String, text.hasPrefix(prefix), let id = UUID(uuidString: String(text.dropFirst(prefix.count))) else { return }
-            DispatchQueue.main.async { MainActor.assumeIsolated { take(id) } }
+            guard let text = object as? String else { return }
+            let item: Item
+            if text.hasPrefix(prefix), let id = UUID(uuidString: String(text.dropFirst(prefix.count))) {
+                item = .project(id)
+            } else if let id = UUID(uuidString: text) {
+                item = .session(id)
+            } else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { take(item) } }
         }
         return true
+    }
+}
+
+/// A rail mark that takes drops: it grows and glows in its colour while something is over it.
+private struct DropLift: ViewModifier {
+    let key: String
+    let hue: Color
+    @Binding var target: String?
+    let take: @MainActor (ProjectDrag.Item) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(target == key ? 1.14 : 1)
+            .shadow(color: hue.opacity(target == key ? 0.6 : 0), radius: 8)
+            .animation(.spring(response: 0.25, dampingFraction: 0.55), value: target)
+            .onDrop(of: [UTType.plainText], isTargeted: Binding(get: { target == key }, set: { over in
+                if over { target = key } else if target == key { target = nil }
+            })) { providers in
+                ProjectDrag.receive(providers, take: take)
+            }
     }
 }
