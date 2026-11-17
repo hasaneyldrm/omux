@@ -32,15 +32,62 @@ struct ProjectRail: View {
         store.groups.filter { !store.isActive($0) }.sorted { store.lastActivity($0) > store.lastActivity($1) }
     }
 
+    /// One mark on the rail: a project on its own, or a workspace and all its projects.
+    enum Entry: Identifiable {
+        case project(TabGroup)
+        case workspace(String, [TabGroup])
+
+        var id: String {
+            switch self {
+            case .project(let group): return group.id.uuidString
+            case .workspace(let name, _): return "workspace:" + name
+            }
+        }
+    }
+
+    /// The projects as marks, in their order: a workspace takes the place of its first project
+    /// there, and holds every project of it. One already in `taken` is left out.
+    private func entries(_ groups: [TabGroup], taken: Set<String> = []) -> [Entry] {
+        var seen = taken
+        return groups.compactMap { group in
+            guard let name = group.workspace else { return .project(group) }
+            guard seen.insert(name).inserted else { return nil }
+            return .workspace(name, store.projects(inWorkspace: name))
+        }
+    }
+
+    /// The workspace of the project on show, whose mark is then the one lit.
+    private var shownWorkspace: String? {
+        shownID.flatMap { id in store.groups.first { $0.id == id } }?.workspace
+    }
+
+    @ViewBuilder private func mark(_ entry: Entry, quiet: Bool = false) -> some View {
+        switch entry {
+        case .project(let group):
+            ProjectMark(group: group, shown: group.id == shownID, named: open, quiet: quiet) { pick(group) }
+                .contextMenu { GroupMenu(group: group) }
+        case .workspace(let name, let projects):
+            // Drawn as a project holding every session of the workspace, so its dot tells the
+            // most pressing state among all of them.
+            ProjectMark(group: TabGroup(name: name, tabs: projects.flatMap(\.tabs)), shown: shownWorkspace == name, named: open, quiet: quiet,
+                        detail: projects.count == 1 ? "1 project" : "\(projects.count) projects") {
+                // Back to the project last worked in there.
+                if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { pick(latest) }
+            }
+            .contextMenu { WorkspaceMenu(name: name) }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 6) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 7) {
-                    ForEach(active) { group in
-                        ProjectMark(group: group, shown: group.id == shownID, named: open) { pick(group) }
-                            .contextMenu { GroupMenu(group: group) }
-                    }
-                    let idle = idle
+                    let activeEntries = entries(active)
+                    ForEach(activeEntries) { mark($0) }
+                    // A workspace with any project at work is with the active marks, whole.
+                    let taken = Set(activeEntries.compactMap { if case .workspace(let name, _) = $0 { return name } else { return nil } })
+                    let idleEntries = entries(idle, taken: taken)
+                    let idle = idle.filter { $0.workspace.map { !taken.contains($0) } ?? true }
                     // The project on show stays in view, so a stack holding it lists itself.
                     let listed = idle.count < 2 || idleListed || idle.contains { $0.id == shownID }
                     if idle.count >= 2 {
@@ -66,10 +113,7 @@ struct ProjectRail: View {
                         .help(idle.map(\.name).joined(separator: ", "))
                     }
                     if listed {
-                        ForEach(idle) { group in
-                            ProjectMark(group: group, shown: group.id == shownID, named: open, quiet: true) { pick(group) }
-                                .contextMenu { GroupMenu(group: group) }
-                        }
+                        ForEach(idleEntries) { mark($0, quiet: true) }
                     }
                     Button { store.openFolderPanel() } label: {
                         HStack(spacing: 9) {
@@ -152,6 +196,9 @@ private struct ProjectMark: View {
     var named = false
     /// An idle project, listed under the stack: fainter than the ones with work in them.
     var quiet = false
+    /// What the open rail says under the name instead of what the sessions are doing, e.g. a
+    /// workspace's number of projects.
+    var detail: String? = nil
     let action: () -> Void
     @State private var hovering = false
 
@@ -198,7 +245,8 @@ private struct ProjectMark: View {
             if named {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(group.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
-                    Text(Self.doing(sessions: group.tabs.count, waiting: waiting, failed: failed, working: working))
+                    Text(detail.map { waiting + failed + working == 0 ? $0 : $0 + " · " + Self.doing(sessions: group.tabs.count, waiting: waiting, failed: failed, working: working) }
+                         ?? Self.doing(sessions: group.tabs.count, waiting: waiting, failed: failed, working: working))
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -282,6 +330,44 @@ struct RailProjectTitle: View {
         .padding(.bottom, 6)
         .contentShape(Rectangle())
         .contextMenu { GroupMenu(group: group) }
+    }
+}
+
+/// The heading of the list beside the rail when it shows a workspace: its name and how many
+/// projects it holds. The projects follow, each under its own header with its folder.
+struct RailWorkspaceTitle: View {
+    @EnvironmentObject var store: Store
+    let name: String
+
+    var body: some View {
+        let projects = store.projects(inWorkspace: name)
+        VStack(alignment: .leading, spacing: 1) {
+            Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            Text(projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.top, 2)
+        .padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .contextMenu { WorkspaceMenu(name: name) }
+    }
+}
+
+struct WorkspaceMenu: View {
+    @EnvironmentObject var store: Store
+    let name: String
+
+    var body: some View {
+        Button("New Project in \(name)…") { store.newGroup(inWorkspace: name) }
+        Divider()
+        Button("Rename Workspace…") {
+            if let new = Store.askWorkspaceName(title: "Rename workspace", initial: name) { store.renameWorkspace(name, to: new) }
+        }
+        Button("Ungroup Workspace") { store.ungroupWorkspace(name) }
     }
 }
 

@@ -46,8 +46,13 @@ struct Sidebar: View {
         store.groups.first { $0.id == railState.shownGroupID } ?? store.selectedGroup ?? store.groups.first
     }
 
+    /// The workspace the list shows: the one of the project on show.
+    private var shownWorkspace: String? { rail ? shownGroup?.workspace : nil }
+
     /// The shown project's rows with its header first, as `moveRows` expects; the list leaves the header out.
+    /// For a workspace, every project of it, each with its header.
     private var railRows: [SidebarRow] {
+        if let name = shownWorkspace { return store.projects(inWorkspace: name).flatMap(groupRows) }
         guard var group = shownGroup else { return [] }
         group.isCollapsed = false
         return groupRows(group)
@@ -112,7 +117,7 @@ struct Sidebar: View {
     var body: some View {
         // In the rail layout the list is one project's rows without its header; otherwise all of them.
         let all = rail ? railRows : rows
-        let skipped = rail ? min(1, all.count) : 0
+        let skipped = rail && shownWorkspace == nil ? min(1, all.count) : 0
         let shown = Array(all.dropFirst(skipped))
         // The strip keeps its place; opened under the pointer, it lies over the list.
         return HStack(spacing: 0) {
@@ -188,7 +193,11 @@ struct Sidebar: View {
             // The list grows into the title bar's safe area when it touches it, which would put it
             // over the buttons and take their clicks. A 1pt gap keeps it below them.
             Spacer(minLength: 0).frame(height: 1)
-            if rail, let group = shownGroup { RailProjectTitle(group: group) }
+            if let name = shownWorkspace {
+                RailWorkspaceTitle(name: name)
+            } else if rail, let group = shownGroup {
+                RailProjectTitle(group: group)
+            }
 
             // No selection binding: the system's selection is a solid bar. Rows select themselves
             // on a click and draw their own highlight.
@@ -601,6 +610,18 @@ struct GroupMenu: View {
             Button("Unpin") { store.pin(group.id, false) }
         } else {
             Button("Pin to Top") { store.pin(group.id, true) }
+        }
+        Menu("Workspace") {
+            ForEach(store.workspaceNames, id: \.self) { name in
+                Toggle(name, isOn: Binding(get: { group.workspace == name }, set: { if $0 { store.setWorkspace(group.id, name) } }))
+            }
+            if !store.workspaceNames.isEmpty { Divider() }
+            Button("New Workspace…") {
+                if let name = Store.askWorkspaceName(title: "New workspace for \(group.name)") { store.setWorkspace(group.id, name) }
+            }
+            if group.workspace != nil {
+                Button("Take Out of Workspace") { store.setWorkspace(group.id, nil) }
+            }
         }
         Button("Move Up") { store.moveGroup(group.id, by: -1) }
             .disabled(store.groups.first?.id == group.id)

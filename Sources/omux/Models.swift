@@ -127,6 +127,10 @@ struct TabGroup: Identifiable, Codable, Hashable {
     /// is then a folder on that machine. nil for a project on this Mac.
     var host: String?
     var isRemote: Bool { !(host ?? "").isEmpty }
+    /// The workspace the project belongs to, by name: projects of one workspace share one mark
+    /// on the rail and are listed together beside it. A workspace is only this name, with no
+    /// folder of its own; each of its projects keeps its folder. nil for a project on its own.
+    var workspace: String?
     var tabs: [TabItem] = []
 
     init(name: String, directory: String? = nil, tabs: [TabItem] = []) {
@@ -152,6 +156,7 @@ struct TabGroup: Identifiable, Codable, Hashable {
         forcedIdle = try c.decodeIfPresent(Bool.self, forKey: .forcedIdle) ?? false
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         host = try c.decodeIfPresent(String.self, forKey: .host)
+        workspace = try c.decodeIfPresent(String.self, forKey: .workspace)
         tabs = try c.decodeIfPresent([TabItem].self, forKey: .tabs) ?? []
     }
 }

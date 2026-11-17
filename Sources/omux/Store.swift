@@ -1591,6 +1591,58 @@ final class Store: ObservableObject {
         selectedTabID = id
     }
 
+    // MARK: Workspaces
+
+    /// Workspace names in the order their first project comes in the sidebar.
+    var workspaceNames: [String] {
+        var seen = Set<String>()
+        return groups.compactMap(\.workspace).filter { seen.insert($0).inserted }
+    }
+
+    func projects(inWorkspace name: String) -> [TabGroup] {
+        groups.filter { $0.workspace == name }
+    }
+
+    /// Puts a project in a workspace, or takes it out of one with nil.
+    func setWorkspace(_ groupID: UUID, _ name: String?) {
+        let name = name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        updateGroup(groupID) { $0.workspace = name }
+    }
+
+    func renameWorkspace(_ old: String, to new: String) {
+        let new = new.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !new.isEmpty, new != old else { return }
+        for index in groups.indices where groups[index].workspace == old { groups[index].workspace = new }
+    }
+
+    /// The workspace goes; its projects stay, each on its own again.
+    func ungroupWorkspace(_ name: String) {
+        for index in groups.indices where groups[index].workspace == name { groups[index].workspace = nil }
+    }
+
+    /// A new project, folder first, made right inside the workspace.
+    func newGroup(inWorkspace name: String) {
+        let before = Set(groups.map(\.id))
+        newGroup()
+        for index in groups.indices where !before.contains(groups[index].id) { groups[index].workspace = name }
+    }
+
+    /// Asks for a workspace's name; nil when cancelled or left empty.
+    static func askWorkspaceName(title: String, initial: String = "") -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "A workspace gathers projects under one mark on the rail. It has no folder; its projects keep theirs."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = initial
+        field.placeholderString = "Workspace name"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
     func newGroup() {
         // A project is a folder first; cancelling still makes one, named by hand, with no agent yet.
         let folder = Self.chooseFolder(prompt: "Choose the project's folder")
