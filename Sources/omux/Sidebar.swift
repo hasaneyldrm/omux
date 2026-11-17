@@ -205,7 +205,7 @@ struct Sidebar: View {
                 ForEach(shown) { row in
                     switch row {
                     case .group(let group):
-                        GroupHeader(group: group)
+                        GroupHeader(group: group, inWorkspace: shownWorkspace != nil)
                             .selectionDisabled()
                             .listRowSeparator(.hidden)
                     case .tab(let tab, let groupID):
@@ -433,10 +433,18 @@ struct TabRow: View {
 struct GroupHeader: View {
     @EnvironmentObject var store: Store
     let group: TabGroup
+    /// Listed among a workspace's projects: a folder mark says it's a project with a folder.
+    var inWorkspace = false
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 6) {
+            if inWorkspace {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .help(group.directory?.tildeAbbreviated ?? "No folder")
+            }
             if store.renamingID == group.id {
                 RenameField(initial: group.name) { store.rename(group.id, to: $0) }
             } else {

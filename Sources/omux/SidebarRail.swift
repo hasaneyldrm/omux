@@ -70,7 +70,7 @@ struct ProjectRail: View {
             // Drawn as a project holding every session of the workspace, so its dot tells the
             // most pressing state among all of them.
             ProjectMark(group: TabGroup(name: name, tabs: projects.flatMap(\.tabs)), shown: shownWorkspace == name, named: open, quiet: quiet,
-                        detail: projects.count == 1 ? "1 project" : "\(projects.count) projects") {
+                        detail: projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects", stack: projects.count) {
                 // Back to the project last worked in there.
                 if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { pick(latest) }
             }
@@ -199,8 +199,13 @@ private struct ProjectMark: View {
     /// What the open rail says under the name instead of what the sessions are doing, e.g. a
     /// workspace's number of projects.
     var detail: String? = nil
+    /// A workspace's number of projects: the mark is drawn as a stack of that many cards, which
+    /// fan out under the pointer and while the workspace is on show. 0 for a project.
+    var stack = 0
     let action: () -> Void
     @State private var hovering = false
+    /// Set once the mark is on screen, so a workspace's cards slide out from behind it.
+    @State private var appeared = false
 
     var body: some View {
         let states = group.tabs.map { store.runtime[$0.id] ?? TabRuntime() }
@@ -233,6 +238,21 @@ private struct ProjectMark: View {
                             .offset(x: -8)
                     }
                 }
+                .background { if stack > 0 { cards(shape: shape, hue: hue) } }
+                .overlay(alignment: .bottomTrailing) {
+                    if stack > 0 {
+                        Text("\(stack)")
+                            .font(.system(size: 8, weight: .bold).monospacedDigit())
+                            .foregroundStyle(.black.opacity(0.8))
+                            .padding(.horizontal, 3)
+                            .frame(minWidth: 12, minHeight: 12)
+                            .background(hue, in: Capsule())
+                            .overlay(Capsule().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+                            .offset(x: 4, y: 4)
+                            .scaleEffect(appeared ? 1 : 0.4)
+                            .opacity(appeared ? 1 : 0)
+                    }
+                }
                 .overlay(alignment: .topTrailing) {
                     if let state {
                         StatusDot(color: state, pulsing: waiting == 0 && failed == 0, size: 8)
@@ -255,9 +275,32 @@ private struct ProjectMark: View {
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .onHover { over in withAnimation(.spring(response: 0.28, dampingFraction: 0.62)) { hovering = over } }
+        .animation(.spring(response: 0.32, dampingFraction: 0.64), value: shown)
+        .onAppear {
+            guard stack > 0, !appeared else { return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.6).delay(0.05)) { appeared = true }
+        }
         // Open, the strip says all this itself.
         .help(named ? "" : Self.summary(group.name, sessions: group.tabs.count, waiting: waiting, failed: failed, working: working))
+    }
+
+    /// The cards behind a workspace's mark, one per project up to two, in the workspace's
+    /// colour: squared up at rest, fanned out to the upper right under the pointer or on show.
+    /// Under the mark's own translucent face sits an opaque one, so the cards only peek out.
+    @ViewBuilder private func cards(shape: RoundedRectangle, hue: Color) -> some View {
+        let fan: CGFloat = !appeared ? 0 : (hovering || shown) ? 1.6 : 1
+        ZStack {
+            ForEach((0..<min(stack, 2)).reversed(), id: \.self) { depth in
+                let step = CGFloat(depth + 1)
+                shape.fill(Color(nsColor: .windowBackgroundColor))
+                    .overlay(shape.fill(hue.opacity(0.10 + 0.06 * (2 - step))))
+                    .overlay(shape.strokeBorder(hue.opacity(0.30 + 0.15 * (2 - step)), lineWidth: 1))
+                    .rotationEffect(.degrees(Double(fan * step * 3)), anchor: .bottomLeading)
+                    .offset(x: fan * step * 2.5, y: -fan * step * 2.5)
+            }
+            shape.fill(Color(nsColor: .windowBackgroundColor))
+        }
     }
 
     /// Six colours a project can have. Which one comes from its name, so it is the same on
@@ -341,13 +384,30 @@ struct RailWorkspaceTitle: View {
 
     var body: some View {
         let projects = store.projects(inWorkspace: name)
-        VStack(alignment: .leading, spacing: 1) {
-            Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-            Text(projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+        let hue = ProjectMark.hue(name)
+        HStack(spacing: 8) {
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(hue)
+                .frame(width: 26, height: 26)
+                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("WORKSPACE")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .tracking(0.8)
+                    .foregroundStyle(hue.opacity(0.9))
+                HStack(spacing: 5) {
+                    Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(projects.count == 1 ? "1 project" : "\(projects.count) projects")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
         }
+        .id(name)
+        .transition(.asymmetric(insertion: .move(edge: .leading).combined(with: .opacity), removal: .opacity))
+        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: name)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.top, 2)
