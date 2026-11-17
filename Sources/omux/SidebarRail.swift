@@ -57,9 +57,9 @@ struct ProjectRail: View {
             ProjectMark(group: group, shown: shownWorkspace == nil && group.id == shownID, named: open, quiet: quiet) { pick(group) }
                 .contextMenu { GroupMenu(group: group) }
                 // Dragged onto a workspace's mark, the project goes into that workspace.
-                .onDrag { ProjectDrag.provider(group.id) }
+                .onDrag { SidebarDrag.begin(.project(group.id)) }
                 // A session dropped here moves into this project.
-                .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(group.name), target: $dropTarget, accepts: .sessions) { item in
+                .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(group.name), target: $dropTarget, accepts: .sessions, spring: { pick(group) }) { item in
                     guard case .session(let id) = item else { return }
                     store.moveTab(id, toGroup: group.id)
                 })
@@ -73,14 +73,8 @@ struct ProjectRail: View {
             .contextMenu { WorkspaceMenu(name: name) }
             // A project dropped here joins the workspace; a session goes to the project of it
             // last worked in.
-            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget, accepts: .both) { item in
-                switch item {
-                case .project(let id):
-                    store.setWorkspace(id, name)
-                case .session(let id):
-                    let projects = store.projects(inWorkspace: name)
-                    if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { store.moveTab(id, toGroup: latest.id) }
-                }
+            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget, accepts: .both, spring: { pickWorkspace(name) }) { item in
+                store.drop(item, onWorkspace: name)
             })
         }
     }
@@ -127,11 +121,10 @@ struct ProjectRail: View {
                         ForEach(idleEntries) { mark($0, quiet: true) }
                     }
                     Button {
-                        // A workspace is only a name: no folder to pick. Its projects bring theirs.
-                        if let name = Store.askWorkspaceName(title: "New workspace") {
-                            store.createWorkspace(name)
-                            pickWorkspace(name)
-                        }
+                        // A workspace is only a name: no folder to pick, and nothing to fill in
+                        // first. It is made at once and named in place, in the list beside.
+                        open = false
+                        pickWorkspace(store.newWorkspace())
                     } label: {
                         HStack(spacing: 9) {
                             Image(systemName: "plus")
@@ -139,16 +132,19 @@ struct ProjectRail: View {
                                 .foregroundStyle(.tertiary)
                                 .frame(width: 30, height: 30)
                                 .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.primary.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-                            if open { Text("New workspace…").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1); Spacer(minLength: 0) }
+                            if open { Text("New workspace").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1); Spacer(minLength: 0) }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("New workspace")
+                    .help("New workspace — or drop a project here to start one with it")
+                    // A project dropped on the + starts a new workspace with it.
+                    .modifier(DropLift(key: "new-workspace", hue: .secondary, target: $dropTarget, accepts: .projects) { item in
+                        guard case .project(let id) = item else { return }
+                        pickWorkspace(store.newWorkspace(with: id))
+                    })
                     .contextMenu {
-                        Button("New Workspace…") {
-                            if let name = Store.askWorkspaceName(title: "New workspace") { store.createWorkspace(name); pickWorkspace(name) }
-                        }
+                        Button("New Workspace") { pickWorkspace(store.newWorkspace()) }
                         Divider()
                         Button("New Project") { store.newGroup() }
                         Button("New Remote Project…") { store.showRemoteProject = true }
@@ -414,7 +410,13 @@ struct RailWorkspaceTitle: View {
                 .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(hue.opacity(0.45), lineWidth: 1))
             VStack(alignment: .leading, spacing: 3) {
-                Text(name).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                if store.renamingWorkspace == name {
+                    WorkspaceNameField(name: name)
+                } else {
+                    Text(name).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                        .onTapGesture(count: 2) { store.renamingWorkspace = name }
+                        .help("Double-click to rename")
+                }
                 HStack(spacing: 10) {
                     Text(projects.count == 1 ? "1 project" : "\(projects.count) projects")
                         .foregroundStyle(.tertiary)
@@ -437,6 +439,120 @@ struct RailWorkspaceTitle: View {
         .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.07)).frame(height: 1).padding(.horizontal, 14) }
         .contentShape(Rectangle())
         .contextMenu { WorkspaceMenu(name: name) }
+        // A project dropped on the heading joins the workspace; a session goes to the project
+        // of it last worked in.
+        .modifier(DropLift(key: "title:" + name, hue: hue, target: $dropTarget, accepts: .both, lift: 1.02) { item in
+            store.drop(item, onWorkspace: name)
+        })
+    }
+
+    @State private var dropTarget: String?
+}
+
+/// The workspace's name, typed in place where it shows. Return or a click elsewhere keeps it,
+/// Escape keeps the name it had.
+struct WorkspaceNameField: View {
+    @EnvironmentObject var store: Store
+    let name: String
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("Workspace name", text: $draft)
+            .textFieldStyle(.plain)
+            .font(.system(size: 15, weight: .semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(.primary.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ProjectMark.hue(name).opacity(0.6), lineWidth: 1))
+            .padding(.leading, -5)
+            .focused($focused)
+            .onAppear {
+                draft = name
+                DispatchQueue.main.async { focused = true }
+            }
+            .onSubmit { finish(save: true) }
+            .onExitCommand { finish(save: false) }
+            .onChange(of: focused) { _, now in if !now { finish(save: true) } }
+    }
+
+    private func finish(save: Bool) {
+        guard store.renamingWorkspace == name else { return }
+        store.renamingWorkspace = nil
+        if save { store.renameWorkspace(name, to: draft) }
+    }
+}
+
+/// What a workspace with no project yet shows under its name: the projects there are, to bring
+/// in with a click, and a way to make a new one. All in the list, nothing over the app.
+struct WorkspaceSetup: View {
+    @EnvironmentObject var store: Store
+    let name: String
+
+    var body: some View {
+        let others = store.groups.filter { $0.workspace != name }
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Bring projects in")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            if others.isEmpty {
+                Text("No other projects yet.").font(.system(size: 11)).foregroundStyle(.tertiary)
+            }
+            VStack(spacing: 2) {
+                ForEach(others) { group in AddProjectRow(group: group, workspace: name) }
+            }
+            Button {
+                store.newGroup(inWorkspace: name)
+            } label: {
+                Label("New project from a folder…", systemImage: "folder.badge.plus").font(.system(size: 11.5))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
+            Text("You can also drag a project or a session onto this workspace's mark on the rail, or onto its name above.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A project offered to a workspace: its mark, its name and where it is now; a click brings it in.
+private struct AddProjectRow: View {
+    @EnvironmentObject var store: Store
+    let group: TabGroup
+    let workspace: String
+    @State private var hovering = false
+
+    var body: some View {
+        let hue = ProjectMark.hue(group.name)
+        HStack(spacing: 8) {
+            Text(ProjectMark.initials(group.name))
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(hue)
+                .frame(width: 20, height: 20)
+                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            VStack(alignment: .leading, spacing: 0) {
+                Text(group.name).font(.system(size: 12)).lineLimit(1)
+                Text(group.workspace.map { "in " + $0 } ?? "on its own").font(.system(size: 9.5)).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(hovering ? AnyShapeStyle(hue) : AnyShapeStyle(.tertiary))
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(.primary.opacity(hovering ? 0.06 : 0)))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { store.setWorkspace(group.id, workspace) } }
+        .help("Move \(group.name) into \(workspace)")
     }
 }
 
@@ -500,11 +616,22 @@ struct WorkspaceMenu: View {
 
     var body: some View {
         Button("New Project in \(name)…") { store.newGroup(inWorkspace: name) }
-        Divider()
-        Button("Rename Workspace…") {
-            if let new = Store.askWorkspaceName(title: "Rename workspace", initial: name) { store.renameWorkspace(name, to: new) }
+        let others = store.groups.filter { $0.workspace != name }
+        if !others.isEmpty {
+            Menu("Add Project") {
+                ForEach(others) { group in Button(group.name) { store.setWorkspace(group.id, name) } }
+            }
         }
-        Button("Ungroup Workspace") { store.ungroupWorkspace(name) }
+        Divider()
+        Button("Rename Workspace") {
+            RailState.shared.showWorkspace(name, in: store)
+            store.renamingWorkspace = name
+        }
+        if store.projects(inWorkspace: name).isEmpty {
+            Button("Delete Workspace", role: .destructive) { store.ungroupWorkspace(name) }
+        } else {
+            Button("Ungroup Workspace") { store.ungroupWorkspace(name) }
+        }
     }
 }
 
@@ -598,7 +725,7 @@ enum ProjectDrag {
     }
 
     /// What a drop on the rail carries: a project, or a session dragged from the list.
-    enum Item { case project(UUID), session(UUID) }
+    enum Item: Equatable { case project(UUID), session(UUID) }
 
     /// Calls `take` on the main thread with what was dropped; false when it is neither.
     static func receive(_ providers: [NSItemProvider], take: @escaping @MainActor (Item) -> Void) -> Bool {
@@ -618,20 +745,24 @@ enum ProjectDrag {
 }
 
 /// A rail mark that takes drops: it grows and glows in its colour while something is over it.
-private struct DropLift: ViewModifier {
-    enum Accepts { case sessions, both }
+struct DropLift: ViewModifier {
+    enum Accepts { case sessions, projects, both }
     let key: String
     let hue: Color
     @Binding var target: String?
     let accepts: Accepts
+    var lift: CGFloat = 1.14
+    /// Held over the mark a moment while dragging, it opens what the mark stands for, so the
+    /// drop can be made at an exact place in its list.
+    var spring: (@MainActor () -> Void)? = nil
     let take: @MainActor (ProjectDrag.Item) -> Void
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(target == key ? 1.14 : 1)
+            .scaleEffect(target == key ? lift : 1)
             .shadow(color: hue.opacity(target == key ? 0.6 : 0), radius: 8)
             .animation(.spring(response: 0.25, dampingFraction: 0.55), value: target)
-            .onDrop(of: [UTType.plainText], delegate: RailDropDelegate(key: key, target: $target, accepts: accepts, take: take))
+            .onDrop(of: [UTType.plainText], delegate: RailDropDelegate(key: key, target: $target, accepts: accepts, spring: spring, take: take))
     }
 }
 
@@ -641,10 +772,29 @@ private struct RailDropDelegate: DropDelegate {
     let key: String
     @Binding var target: String?
     let accepts: DropLift.Accepts
+    let spring: (@MainActor () -> Void)?
     let take: @MainActor (ProjectDrag.Item) -> Void
 
-    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.plainText]) && !info.hasItemsConforming(to: [.fileURL]) }
-    func dropEntered(info: DropInfo) { target = key }
+    func validateDrop(info: DropInfo) -> Bool {
+        guard info.hasItemsConforming(to: [.plainText]), !info.hasItemsConforming(to: [.fileURL]) else { return false }
+        // What the sidebar is dragging is known before the drop: a mark lights only for what it takes.
+        switch SidebarDrag.shared.item {
+        case .project: return accepts != .sessions
+        case .session: return accepts != .projects
+        case nil: return true
+        }
+    }
+    func dropEntered(info: DropInfo) {
+        target = key
+        guard let spring else { return }
+        let key = key, target = $target
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            MainActor.assumeIsolated {
+                guard target.wrappedValue == key else { return }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { spring() }
+            }
+        }
+    }
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
     func dropExited(info: DropInfo) { if target == key { target = nil } }
 
@@ -653,6 +803,8 @@ private struct RailDropDelegate: DropDelegate {
         let accepts = accepts
         return ProjectDrag.receive(info.itemProviders(for: [.plainText])) { item in
             if case .project = item, accepts == .sessions { return }
+            if case .session = item, accepts == .projects { return }
+            SidebarDrag.shared.item = nil
             take(item)
         }
     }

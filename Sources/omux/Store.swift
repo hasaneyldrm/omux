@@ -73,6 +73,8 @@ final class Store: ObservableObject {
         return state
     }
     @Published var renamingID: UUID?
+    /// The workspace whose name is being typed in the list beside the rail.
+    @Published var renamingWorkspace: String?
     @Published var editingTabID: UUID?
     @Published var editingGroupID: UUID?
     @Published var showQuickSwitcher = false
@@ -1643,13 +1645,18 @@ final class Store: ObservableObject {
         let new = new.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !new.isEmpty, new != old else { return }
         workspaceOrder = workspaceNames.map { $0 == old ? new : $0 }
+        // Two names becoming one: the order keeps the first.
+        var seen = Set<String>()
+        workspaceOrder = workspaceOrder.filter { seen.insert($0).inserted }
         for index in groups.indices where groups[index].workspace == old { groups[index].workspace = new }
+        if RailState.shared.shownWorkspace == old { RailState.shared.shownWorkspace = new }
     }
 
     /// The workspace goes; its projects stay, each on its own again.
     func ungroupWorkspace(_ name: String) {
         workspaceOrder = workspaceNames.filter { $0 != name }
         for index in groups.indices where groups[index].workspace == name { groups[index].workspace = nil }
+        if RailState.shared.shownWorkspace == name { RailState.shared.shownWorkspace = nil }
     }
 
     /// A new project, folder first, made right inside the workspace.
@@ -1659,20 +1666,44 @@ final class Store: ObservableObject {
         for index in groups.indices where !before.contains(groups[index].id) { groups[index].workspace = name }
     }
 
-    /// Asks for a workspace's name; nil when cancelled or left empty.
-    static func askWorkspaceName(title: String, initial: String = "") -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = "A workspace gathers projects under one mark on the rail. It has no folder; its projects keep theirs."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = initial
-        field.placeholderString = "Workspace name"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    /// A new workspace, made at once under a name that is free, its name then typed in place in
+    /// the list beside the rail: no window over the app. With a project, the project goes in it.
+    @discardableResult
+    func newWorkspace(with groupID: UUID? = nil) -> String {
+        let taken = Set(workspaceNames)
+        var name = "New Workspace"
+        var number = 2
+        while taken.contains(name) { name = "New Workspace \(number)"; number += 1 }
+        createWorkspace(name)
+        if let groupID { setWorkspace(groupID, name) }
+        renamingWorkspace = name
+        return name
+    }
+
+    /// Puts a session in a project at a place among its sessions: before the session at
+    /// `index`, or last when `index` is past the end.
+    func placeTab(_ id: UUID, inGroup groupID: UUID, at index: Int) {
+        guard let loc = location(of: id), let target = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        var index = index
+        if loc.group == target, loc.tab < index { index -= 1 }
+        let tab = groups[loc.group].tabs.remove(at: loc.tab)
+        groups[target].tabs.insert(tab, at: max(0, min(index, groups[target].tabs.count)))
+        groups[target].isCollapsed = false
+    }
+
+    /// Puts a project before another, in that one's workspace, or last in `workspace` when
+    /// there is no project to go before.
+    func placeGroup(_ id: UUID, before targetID: UUID?, workspace: String?) {
+        guard targetID != id, let from = groups.firstIndex(where: { $0.id == id }) else { return }
+        var group = groups.remove(at: from)
+        if let targetID, let to = groups.firstIndex(where: { $0.id == targetID }) {
+            group.workspace = groups[to].workspace
+            groups.insert(group, at: to)
+        } else {
+            group.workspace = workspace
+            groups.append(group)
+        }
+        if let name = group.workspace { createWorkspace(name) }
     }
 
     func newGroup() {
@@ -1728,44 +1759,6 @@ final class Store: ObservableObject {
               let to = groups.firstIndex(where: { $0.id == targetID }) else { return }
         let group = groups.remove(at: from)
         groups.insert(group, at: to)
-    }
-
-    /// Applies a drag in the flat sidebar list. Moving a project row reorders projects;
-    /// moving a session row places it under whichever project row ends up above it.
-    func moveRows(_ rows: [SidebarRow], from source: IndexSet, to destination: Int) {
-        guard let first = source.first else { return }
-        var moved = rows
-        moved.move(fromOffsets: source, toOffset: destination)
-        switch rows[first] {
-        case .group:
-            let order = moved.compactMap { row -> UUID? in
-                if case .group(let g) = row { return g.id } else { return nil }
-            }
-            // Projects not in the list (stacked as idle) keep their place after the visible ones.
-            let hidden = groups.enumerated().compactMap { order.contains($0.element.id) ? nil : $0.element.id }
-            let full = order + hidden
-            groups.sort { a, b in (full.firstIndex(of: a.id) ?? 0) < (full.firstIndex(of: b.id) ?? 0) }
-        case .shells, .projects:
-            return
-        case .tab(let tab, let fromGroupID), .nested(let tab, let fromGroupID):
-            guard let newIndex = moved.firstIndex(where: { $0.id == tab.id }) else { return }
-            var targetID = groups.first?.id
-            var position = 0
-            for row in moved[..<newIndex].reversed() {
-                if case .group(let g) = row { targetID = g.id; break }
-                position += 1
-            }
-            guard let targetID, let gi = groups.firstIndex(where: { $0.id == targetID }),
-                  let loc = location(of: tab.id) else { return }
-            if fromGroupID == targetID {
-                groups[gi].tabs.remove(at: loc.tab)
-                groups[gi].tabs.insert(tab, at: min(position, groups[gi].tabs.count))
-            } else {
-                groups[loc.group].tabs.remove(at: loc.tab)
-                groups[gi].tabs.insert(tab, at: min(position, groups[gi].tabs.count))
-                groups[gi].isCollapsed = false
-            }
-        }
     }
 
     func moveGroup(_ groupID: UUID, by offset: Int) {

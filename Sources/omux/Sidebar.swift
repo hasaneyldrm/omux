@@ -40,6 +40,8 @@ struct Sidebar: View {
     /// Which project the list shows and whether the strip is open; shared with the strip's
     /// other home, at the window's edge when this list is closed.
     @ObservedObject private var railState = RailState.shared
+    /// What is being dragged in the sidebar and where it would land, for the marks that say so.
+    @ObservedObject private var drag = SidebarDrag.shared
 
     private var rail: Bool { layout == "rail" }
     private var shownGroup: TabGroup? {
@@ -49,7 +51,7 @@ struct Sidebar: View {
     /// The workspace the list shows: the one of the project on show.
     private var shownWorkspace: String? { rail ? (railState.shownWorkspace ?? shownGroup?.workspace) : nil }
 
-    /// The shown project's rows with its header first, as `moveRows` expects; the list leaves the header out.
+    /// The shown project's rows with its header first, so the end of the list knows its last project; the list leaves the header out.
     /// For a workspace, every project of it, each with its header.
     private var railRows: [SidebarRow] {
         if let name = shownWorkspace { return store.projects(inWorkspace: name).flatMap(groupRows) }
@@ -203,96 +205,354 @@ struct Sidebar: View {
             if let name = shownWorkspace {
                 RailWorkspaceTitle(name: name)
                 if store.projects(inWorkspace: name).isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("No projects here yet. A project is a folder; add one, or drag one onto this workspace on the rail.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Button("New Project in \(name)…") { store.newGroup(inWorkspace: name) }
-                            .controlSize(.small)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    WorkspaceSetup(name: name)
                 }
             } else if rail, let group = shownGroup {
                 RailProjectTitle(group: group)
             }
 
-            // No selection binding: the system's selection is a solid bar. Rows select themselves
-            // on a click and draw their own highlight.
-            List {
-                ForEach(shown) { row in
-                    switch row {
-                    case .group(let group):
-                        GroupHeader(group: group, inWorkspace: shownWorkspace != nil)
-                            .selectionDisabled()
-                            .listRowSeparator(.hidden)
-                    case .tab(let tab, let groupID):
-                        SoftRow(selected: store.selectedTabID == tab.id) { store.selectedTabID = tab.id } content: {
-                            if shownWorkspace != nil {
-                                // Under its project's header, along a line in the project's colour.
-                                TabRow(tab: tab)
-                                    .padding(.leading, 14)
-                                    .overlay(alignment: .leading) {
-                                        Capsule()
-                                            .fill(ProjectMark.hue(store.groups.first { $0.id == groupID }?.name ?? "").opacity(0.35))
-                                            .frame(width: 2)
-                                            .padding(.leading, 4)
-                                            .padding(.vertical, 2)
-                                    }
-                            } else {
-                                TabRow(tab: tab).padding(.leading, rail ? 2 : 8)
-                            }
-                        }
-                            .contextMenu { TabMenu(tab: tab, groupID: groupID) }
-                            // Dragged onto a terminal's edge, the session is shown there in a pane.
-                            // (itemProvider keeps the List's own drag, so reordering and clicks still work.)
-                            .itemProvider { NSItemProvider(object: tab.id.uuidString as NSString) }
-                    case .nested(let tab, let groupID):
-                        SoftRow(selected: store.selectedTabID == tab.id) { store.selectedTabID = tab.id } content: {
-                            TabRow(tab: tab)
-                                .padding(.leading, 20)
-                                .overlay(alignment: .leading) {
-                                    Rectangle().fill(.primary.opacity(0.12)).frame(width: 1).padding(.leading, 12)
-                                }
-                        }
-                            .contextMenu { TabMenu(tab: tab, groupID: groupID) }
-                            .itemProvider { NSItemProvider(object: tab.id.uuidString as NSString) }
-                    case .shells(let groupID, let tabs, let expanded):
-                        StackRow(title: "Idle shells", count: tabs.count, expanded: expanded) {
-                            if expanded { expandedShells.remove(groupID) } else { expandedShells.insert(groupID) }
-                        }
-                        .selectionDisabled()
-                        .listRowSeparator(.hidden)
-                        .padding(.leading, 4)
-                        .help(tabs.map(\.name).joined(separator: ", "))
-                        .contextMenu {
-                            Button(expanded ? "Stack idle shells" : "Show idle shells") {
-                                if expanded { expandedShells.remove(groupID) } else { expandedShells.insert(groupID) }
-                            }
-                            Button("Close idle shells") { for tab in tabs { store.requestClose(tab.id) } }
-                        }
-                    case .projects(let groups, let expanded):
-                        StackRow(title: "Idle projects", count: groups.count, expanded: expanded) { expandedProjects.toggle() }
-                            .selectionDisabled()
-                            .listRowSeparator(.hidden)
-                            .padding(.top, 6)
-                            .help(groups.map(\.name).joined(separator: ", "))
-                            .contextMenu {
-                                Button(expanded ? "Stack idle projects" : "Show idle projects") { expandedProjects.toggle() }
-                            }
+            // Not a List: its own drag reorders only inside itself and keeps a row from being
+            // carried anywhere else. Rows here are dragged by hand: within a project, to another
+            // project, onto a project's or a workspace's mark on the rail.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown) { row in
+                        rowView(row, all: all)
                     }
+                    // Below the last row: a session goes last in the last project shown; in a
+                    // workspace, a project goes last in it.
+                    Color.clear
+                        .frame(height: 80)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .top) {
+                            if let spot = drag.spot, spot == endSpot(all: all, for: .session(UUID())) || spot == .end { DropLine() }
+                        }
+                        .modifier(SidebarDropTarget(key: "end", resolve: { item, _, _ in endSpot(all: all, for: item) }, perform: perform))
                 }
-                .onMove { from, to in store.moveRows(all, from: IndexSet(from.map { $0 + skipped }), to: to + skipped) }
+                .padding(.horizontal, 4)
+                .padding(.top, 2)
+                .animation(.spring(response: 0.3, dampingFraction: 0.82), value: shown.map(\.id))
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            .scrollIndicators(.never)
 
             // On a rail the limits are on the rail itself.
             if !rail {
                 Hairline()
                 UsageView()
+            }
+        }
+    }
+}
+
+extension Sidebar {
+    /// One row of the list, with what it takes when something is dragged over it.
+    @ViewBuilder
+    fileprivate func rowView(_ row: SidebarRow, all: [SidebarRow]) -> some View {
+        switch row {
+        case .group(let group):
+            GroupHeader(group: group, inWorkspace: shownWorkspace != nil)
+                .padding(.horizontal, 10)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(ProjectMark.hue(group.name).opacity(drag.spot == .intoProject(group.id) ? 0.18 : 0))
+                    .padding(.horizontal, 4))
+                .overlay(alignment: .top) { if drag.spot == .beforeProject(group.id) { DropLine() } }
+                .modifier(SidebarDropTarget(key: "group:" + group.id.uuidString, resolve: { item, _, _ in
+                    switch item {
+                    case .session: return .intoProject(group.id)
+                    case .project(let id): return id == group.id ? nil : .beforeProject(group.id)
+                    }
+                }, perform: perform))
+        case .tab(let tab, let groupID):
+            sessionRow(tab, groupID: groupID, nested: false)
+        case .nested(let tab, let groupID):
+            sessionRow(tab, groupID: groupID, nested: true)
+        case .shells(let groupID, let tabs, let expanded):
+            StackRow(title: "Idle shells", count: tabs.count, expanded: expanded) {
+                if expanded { expandedShells.remove(groupID) } else { expandedShells.insert(groupID) }
+            }
+            .padding(.leading, 4)
+            .padding(.horizontal, 10)
+            .help(tabs.map(\.name).joined(separator: ", "))
+            .contextMenu {
+                Button(expanded ? "Stack idle shells" : "Show idle shells") {
+                    if expanded { expandedShells.remove(groupID) } else { expandedShells.insert(groupID) }
+                }
+                Button("Close idle shells") { for tab in tabs { store.requestClose(tab.id) } }
+            }
+            .modifier(SidebarDropTarget(key: "shells:" + groupID.uuidString, resolve: { item, _, _ in
+                if case .session = item { return .endOfProject(groupID) }
+                return nil
+            }, perform: perform))
+        case .projects(let groups, let expanded):
+            StackRow(title: "Idle projects", count: groups.count, expanded: expanded) { expandedProjects.toggle() }
+                .padding(.top, 6)
+                .padding(.horizontal, 10)
+                .help(groups.map(\.name).joined(separator: ", "))
+                .contextMenu {
+                    Button(expanded ? "Stack idle projects" : "Show idle projects") { expandedProjects.toggle() }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ tab: TabItem, groupID: UUID, nested: Bool) -> some View {
+        let selected = store.selectedTabID == tab.id
+        SessionRowShell(selected: selected, dragging: drag.item == .session(tab.id)) {
+            store.selectedTabID = tab.id
+        } content: {
+            if nested {
+                TabRow(tab: tab)
+                    .padding(.leading, 20)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(.primary.opacity(0.12)).frame(width: 1).padding(.leading, 12)
+                    }
+            } else if shownWorkspace != nil {
+                // Under its project's header, along a line in the project's colour.
+                TabRow(tab: tab)
+                    .padding(.leading, 14)
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(ProjectMark.hue(store.groups.first { $0.id == groupID }?.name ?? "").opacity(0.35))
+                            .frame(width: 2)
+                            .padding(.leading, 4)
+                            .padding(.vertical, 2)
+                    }
+            } else {
+                TabRow(tab: tab).padding(.leading, rail ? 2 : 8)
+            }
+        }
+        .contextMenu { TabMenu(tab: tab, groupID: groupID) }
+        .overlay(alignment: .top) { if drag.spot == .beforeTab(tab.id) { DropLine() } }
+        .overlay(alignment: .bottom) { if drag.spot == .afterTab(tab.id) { DropLine() } }
+        // Carried as its id: onto a terminal's edge it opens there in a pane; in the list or on
+        // the rail, it moves.
+        .onDrag { SidebarDrag.begin(.session(tab.id)) }
+        .modifier(SidebarDropTarget(key: "tab:" + tab.id.uuidString, resolve: { item, point, height in
+            switch item {
+            case .session: return point.y < height / 2 ? .beforeTab(tab.id) : .afterTab(tab.id)
+            case .project(let id): return id == groupID ? nil : .beforeProject(groupID)
+            }
+        }, perform: perform))
+    }
+
+    /// Where something dropped below the last row goes.
+    fileprivate func endSpot(all: [SidebarRow], for item: ProjectDrag.Item) -> SidebarDrag.Spot? {
+        switch item {
+        case .session:
+            let last = all.last { if case .group = $0 { return true } else { return false } }
+            if case .group(let group) = last { return .endOfProject(group.id) }
+            return nil
+        case .project:
+            return shownWorkspace != nil ? .end : nil
+        }
+    }
+
+    /// Carries out a drop in the list.
+    fileprivate func perform(_ item: ProjectDrag.Item, _ spot: SidebarDrag.Spot) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+            switch (item, spot) {
+            case (.session(let id), .beforeTab(let target)), (.session(let id), .afterTab(let target)):
+                guard id != target, let loc = store.location(of: target) else { return }
+                let after: Int
+                if case .afterTab = spot { after = 1 } else { after = 0 }
+                store.placeTab(id, inGroup: store.groups[loc.group].id, at: loc.tab + after)
+            case (.session(let id), .intoProject(let group)):
+                store.placeTab(id, inGroup: group, at: 0)
+            case (.session(let id), .endOfProject(let group)):
+                store.placeTab(id, inGroup: group, at: .max)
+            case (.project(let id), .beforeProject(let target)):
+                // In a workspace the project joins the one it is put among; in the plain list,
+                // where workspaces don't show, it keeps its own.
+                let keep = store.groups.first { $0.id == id }?.workspace
+                store.placeGroup(id, before: target, workspace: nil)
+                if shownWorkspace == nil { store.updateGroup(id) { $0.workspace = keep } }
+            case (.project(let id), .end):
+                store.placeGroup(id, before: nil, workspace: shownWorkspace)
+            default:
+                break
+            }
+        }
+    }
+}
+
+/// The thin bar that says where a dragged row will land.
+struct DropLine: View {
+    var body: some View {
+        Capsule()
+            .fill(Color.accentColor)
+            .frame(height: 2.5)
+            .padding(.horizontal, 8)
+            .shadow(color: Color.accentColor.opacity(0.6), radius: 3)
+            .transition(.opacity)
+            .allowsHitTesting(false)
+    }
+}
+
+/// A session row outside a List: a click selects it, and it draws its own highlight; dimmed
+/// while it is being carried.
+private struct SessionRowShell<Content: View>: View {
+    let selected: Bool
+    let dragging: Bool
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var hovering = false
+    @Environment(\.hoverBlocked) private var blocked
+
+    var body: some View {
+        content()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RowHighlight(selected: selected, hovering: hovering && !blocked).padding(.horizontal, -2))
+            .opacity(dragging ? 0.4 : 1)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
+            .onHover { hovering = $0 }
+    }
+}
+
+/// What the sidebar is dragging, known from the moment the drag starts, so whatever it passes
+/// over can say whether it takes it and where it would go.
+@MainActor
+final class SidebarDrag: ObservableObject {
+    static let shared = SidebarDrag()
+
+    enum Spot: Equatable {
+        case beforeTab(UUID), afterTab(UUID)
+        /// First in the project: dropped on its header.
+        case intoProject(UUID)
+        /// Last in the project.
+        case endOfProject(UUID)
+        /// A project put before another.
+        case beforeProject(UUID)
+        /// A project put last in the workspace on show.
+        case end
+    }
+
+    @Published var item: ProjectDrag.Item?
+    @Published var spot: Spot?
+    /// The drop target that set `spot`, so leaving one target doesn't clear the next one's.
+    var owner: String?
+
+    /// Starts carrying `item`; what goes on the pasteboard, for whatever takes it elsewhere.
+    static func begin(_ item: ProjectDrag.Item) -> NSItemProvider {
+        shared.item = item
+        shared.spot = nil
+        shared.watchForEnd()
+        switch item {
+        case .session(let id): return NSItemProvider(object: id.uuidString as NSString)
+        case .project(let id): return ProjectDrag.provider(id)
+        }
+    }
+
+    func clear() {
+        item = nil
+        spot = nil
+        owner = nil
+    }
+
+    /// A drag that ends anywhere else (a terminal's edge, outside the window, cancelled) says
+    /// nothing here: the button coming up is the sign it is over.
+    private func watchForEnd() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.item != nil else { return }
+                if NSEvent.pressedMouseButtons & 1 == 0 { self.clear() } else { self.watchForEnd() }
+            }
+        }
+    }
+}
+
+/// A row of the list that takes drops: `resolve` says where the dragged thing would go for a
+/// point in the row (nil: it doesn't take it), `perform` carries it out.
+struct SidebarDropTarget: ViewModifier {
+    let key: String
+    let resolve: @MainActor (ProjectDrag.Item, CGPoint, CGFloat) -> SidebarDrag.Spot?
+    let perform: @MainActor (ProjectDrag.Item, SidebarDrag.Spot) -> Void
+    @State private var height: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .background(GeometryReader { proxy in
+                Color.clear
+                    .onAppear { height = proxy.size.height }
+                    .onChange(of: proxy.size.height) { _, new in height = new }
+            })
+            .onDrop(of: [UTType.plainText], delegate: ListDropDelegate(key: key, height: height, resolve: resolve, perform: perform))
+    }
+}
+
+private struct ListDropDelegate: DropDelegate {
+    let key: String
+    let height: CGFloat
+    let resolve: @MainActor (ProjectDrag.Item, CGPoint, CGFloat) -> SidebarDrag.Spot?
+    let perform: @MainActor (ProjectDrag.Item, SidebarDrag.Spot) -> Void
+
+    @MainActor private var spot: SidebarDrag.Spot? {
+        guard let item = SidebarDrag.shared.item else { return nil }
+        return resolve(item, location, height)
+    }
+    // Set by the calls below before `spot` is read.
+    @MainActor private var location: CGPoint { ListDropDelegate.lastLocation }
+    @MainActor private static var lastLocation = CGPoint.zero
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.plainText]) && !info.hasItemsConforming(to: [.fileURL])
+    }
+
+    func dropEntered(info: DropInfo) { update(info) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        update(info)
+        return DropProposal(operation: SidebarDrag.shared.spot == nil || SidebarDrag.shared.owner != key ? .forbidden : .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        MainActor.assumeIsolated {
+            let drag = SidebarDrag.shared
+            if drag.owner == key {
+                withAnimation(.easeOut(duration: 0.12)) { drag.spot = nil }
+                drag.owner = nil
+            }
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        MainActor.assumeIsolated {
+            ListDropDelegate.lastLocation = info.location
+            let landing = spot
+            let drag = SidebarDrag.shared
+            drag.clear()
+            guard let landing else { return false }
+            let perform = perform
+            return ProjectDrag.receive(info.itemProviders(for: [.plainText])) { item in perform(item, landing) }
+        }
+    }
+
+    private func update(_ info: DropInfo) {
+        MainActor.assumeIsolated {
+            ListDropDelegate.lastLocation = info.location
+            let new = spot
+            let drag = SidebarDrag.shared
+            guard drag.spot != new || drag.owner != key else { return }
+            withAnimation(.easeOut(duration: 0.12)) { drag.spot = new }
+            drag.owner = new == nil ? (drag.owner == key ? nil : drag.owner) : key
+        }
+    }
+}
+
+extension Store {
+    /// A project or a session dropped on a workspace: the project joins it, the session goes to
+    /// the project of it last worked in.
+    func drop(_ item: ProjectDrag.Item, onWorkspace name: String) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+            switch item {
+            case .project(let id):
+                setWorkspace(id, name)
+            case .session(let id):
+                let projects = projects(inWorkspace: name)
+                if let latest = projects.max(by: { lastActivity($0) < lastActivity($1) }) { moveTab(id, toGroup: latest.id) }
             }
         }
     }
@@ -540,7 +800,7 @@ struct GroupHeader: View {
         .onTapGesture(count: 2) { store.updateGroup(group.id) { $0.isCollapsed.toggle() } }
         .onHover { over in withAnimation(.spring(response: 0.28, dampingFraction: 0.6)) { hovering = over } }
         // Dragged onto another workspace's mark on the rail, the project moves there.
-        .itemProvider { ProjectDrag.provider(group.id) }
+        .onDrag { SidebarDrag.begin(.project(group.id)) }
         .listRowSeparator(.hidden)
         .contextMenu { GroupMenu(group: group) }
     }
@@ -585,7 +845,8 @@ struct GroupHeader: View {
         // A double click folds the project, as on a Finder sidebar's section.
         .onTapGesture(count: 2) { store.updateGroup(group.id) { $0.isCollapsed.toggle() } }
         .onHover { hovering = $0 }
-        .listRowSeparator(.hidden)
+        // Dragged among the projects to reorder, or onto a workspace's mark on the rail.
+        .onDrag { SidebarDrag.begin(.project(group.id)) }
         .contextMenu { GroupMenu(group: group) }
     }
 }
@@ -726,8 +987,9 @@ struct GroupMenu: View {
                 Toggle(name, isOn: Binding(get: { group.workspace == name }, set: { if $0 { store.setWorkspace(group.id, name) } }))
             }
             if !store.workspaceNames.isEmpty { Divider() }
-            Button("New Workspace…") {
-                if let name = Store.askWorkspaceName(title: "New workspace for \(group.name)") { store.setWorkspace(group.id, name) }
+            Button("New Workspace") {
+                let name = store.newWorkspace(with: group.id)
+                RailState.shared.showWorkspace(name, in: store)
             }
             if group.workspace != nil {
                 Button("Take Out of Workspace") { store.setWorkspace(group.id, nil) }
