@@ -13,7 +13,10 @@ struct ProjectRail: View {
     /// Open while the pointer rests on the strip: every project by name, over the list. The
     /// sidebar holds it, so the list underneath can stop taking clicks meanwhile.
     @Binding var open: Bool
+    /// The workspace on show, whose mark is lit; nil for a project on its own.
+    var shownWorkspace: String? = nil
     let pick: (TabGroup) -> Void
+    var pickWorkspace: (String) -> Void = { _ in }
     @State private var hover = 0
     /// The idle projects are listed under their stack instead of folded into it.
     @State private var idleListed = false
@@ -25,14 +28,14 @@ struct ProjectRail: View {
 
     /// Pinned and active projects, in the sidebar's own order.
     private var active: [TabGroup] {
-        let working = store.groups.filter { store.isActive($0) }
+        let working = store.groups.filter { $0.workspace == nil && store.isActive($0) }
         return working.filter(\.pinned) + working.filter { !$0.pinned }
     }
 
     /// Projects with nothing going on, most recently used first. Two or more fold into one tile,
     /// as they fold into one row in the list layout.
     private var idle: [TabGroup] {
-        store.groups.filter { !store.isActive($0) }.sorted { store.lastActivity($0) > store.lastActivity($1) }
+        store.groups.filter { $0.workspace == nil && !store.isActive($0) }.sorted { store.lastActivity($0) > store.lastActivity($1) }
     }
 
     /// One mark on the rail: a project on its own, or a workspace and all its projects.
@@ -48,31 +51,15 @@ struct ProjectRail: View {
         }
     }
 
-    /// The projects as marks, in their order: a workspace takes the place of its first project
-    /// there, and holds every project of it. One already in `taken` is left out.
-    private func entries(_ groups: [TabGroup], taken: Set<String> = []) -> [Entry] {
-        var seen = taken
-        return groups.compactMap { group in
-            guard let name = group.workspace else { return .project(group) }
-            guard seen.insert(name).inserted else { return nil }
-            return .workspace(name, store.projects(inWorkspace: name))
-        }
-    }
-
-    /// The workspace of the project on show, whose mark is then the one lit.
-    private var shownWorkspace: String? {
-        shownID.flatMap { id in store.groups.first { $0.id == id } }?.workspace
-    }
-
     @ViewBuilder private func mark(_ entry: Entry, quiet: Bool = false) -> some View {
         switch entry {
         case .project(let group):
-            ProjectMark(group: group, shown: group.id == shownID, named: open, quiet: quiet) { pick(group) }
+            ProjectMark(group: group, shown: shownWorkspace == nil && group.id == shownID, named: open, quiet: quiet) { pick(group) }
                 .contextMenu { GroupMenu(group: group) }
                 // Dragged onto a workspace's mark, the project goes into that workspace.
                 .onDrag { ProjectDrag.provider(group.id) }
                 // A session dropped here moves into this project.
-                .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(group.name), target: $dropTarget) { item in
+                .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(group.name), target: $dropTarget, accepts: .sessions) { item in
                     guard case .session(let id) = item else { return }
                     store.moveTab(id, toGroup: group.id)
                 })
@@ -80,14 +67,13 @@ struct ProjectRail: View {
             // Drawn as a project holding every session of the workspace, so its dot tells the
             // most pressing state among all of them.
             ProjectMark(group: TabGroup(name: name, tabs: projects.flatMap(\.tabs)), shown: shownWorkspace == name, named: open, quiet: quiet,
-                        detail: projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects", stack: projects.count) {
-                // Back to the project last worked in there.
-                if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { pick(latest) }
+                        detail: projects.count == 1 ? "Workspace · 1 project" : "Workspace · \(projects.count) projects", stack: max(projects.count, 1)) {
+                pickWorkspace(name)
             }
             .contextMenu { WorkspaceMenu(name: name) }
             // A project dropped here joins the workspace; a session goes to the project of it
             // last worked in.
-            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget) { item in
+            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget, accepts: .both) { item in
                 switch item {
                 case .project(let id):
                     store.setWorkspace(id, name)
@@ -103,12 +89,16 @@ struct ProjectRail: View {
         VStack(spacing: 6) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 7) {
-                    let activeEntries = entries(active)
-                    ForEach(activeEntries) { mark($0) }
-                    // A workspace with any project at work is with the active marks, whole.
-                    let taken = Set(activeEntries.compactMap { if case .workspace(let name, _) = $0 { return name } else { return nil } })
-                    let idleEntries = entries(idle, taken: taken)
-                    let idle = idle.filter { $0.workspace.map { !taken.contains($0) } ?? true }
+                    // Workspaces first, always in their own order: they don't move with activity.
+                    ForEach(store.workspaceNames.map { Entry.workspace($0, store.projects(inWorkspace: $0)) }) { mark($0) }
+                    if !store.workspaceNames.isEmpty, !store.groups.filter({ $0.workspace == nil }).isEmpty {
+                        Rectangle().fill(.primary.opacity(0.1)).frame(width: 18, height: 1).padding(.leading, 6).padding(.vertical, 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    // Then the projects on their own, as before: the ones at work, then the idle ones.
+                    ForEach(active.map(Entry.project)) { mark($0) }
+                    let idleEntries = idle.map(Entry.project)
+                    let idle = idle
                     // The project on show stays in view, so a stack holding it lists itself.
                     let listed = idle.count < 2 || idleListed || idle.contains { $0.id == shownID }
                     if idle.count >= 2 {
@@ -136,20 +126,30 @@ struct ProjectRail: View {
                     if listed {
                         ForEach(idleEntries) { mark($0, quiet: true) }
                     }
-                    Button { store.openFolderPanel() } label: {
+                    Button {
+                        // A workspace is only a name: no folder to pick. Its projects bring theirs.
+                        if let name = Store.askWorkspaceName(title: "New workspace") {
+                            store.createWorkspace(name)
+                            pickWorkspace(name)
+                        }
+                    } label: {
                         HStack(spacing: 9) {
                             Image(systemName: "plus")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.tertiary)
                                 .frame(width: 30, height: 30)
                                 .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(.primary.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-                            if open { Text("Open a folder…").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1); Spacer(minLength: 0) }
+                            if open { Text("New workspace…").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1); Spacer(minLength: 0) }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Open folder as a project (⌘O)")
+                    .help("New workspace")
                     .contextMenu {
+                        Button("New Workspace…") {
+                            if let name = Store.askWorkspaceName(title: "New workspace") { store.createWorkspace(name); pickWorkspace(name) }
+                        }
+                        Divider()
                         Button("New Project") { store.newGroup() }
                         Button("New Remote Project…") { store.showRemoteProject = true }
                         Button("Open Folder as Project…") { store.openFolderPanel() }
@@ -239,9 +239,13 @@ struct ProjectMark: View {
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         // Not a Button: on macOS a button keeps a drag from starting, and marks are dragged.
           HStack(spacing: 9) {
-            Text(Self.initials(group.name))
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(hue)
+            VStack(spacing: 2.5) {
+                Text(Self.initials(group.name))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(hue)
+                // One pip a session: filled green while it runs, an empty ring while stopped.
+                if live + stopped > 0 { SessionPips(live: live, stopped: stopped, max: 4, size: 3.5) }
+            }
                 .frame(width: 30, height: 30)
                 .background {
                     if shown {
@@ -261,15 +265,6 @@ struct ProjectMark: View {
                     }
                 }
                 .background { if stack > 0 { cards(shape: shape, hue: hue) } }
-                .overlay(alignment: .bottomTrailing) {
-                    // How many sessions run and how many are stopped, green then grey.
-                    if !group.tabs.isEmpty {
-                        LiveCountBadge(live: live, stopped: stopped)
-                            .offset(x: 6, y: 5)
-                            .scaleEffect(appeared || stack == 0 ? 1 : 0.4)
-                            .opacity(appeared || stack == 0 ? 1 : 0)
-                    }
-                }
                 .overlay(alignment: .topTrailing) {
                     if let state {
                         StatusDot(color: state, pulsing: waiting == 0 && failed == 0, size: 8)
@@ -279,10 +274,8 @@ struct ProjectMark: View {
                     }
                 }
                 .opacity(quiet && !shown && !hovering ? 0.55 : 1)
-                // A small lift under the pointer.
-                .scaleEffect(hovering ? 1.08 : 1)
-                .offset(y: hovering ? -1.5 : 0)
-                .shadow(color: hue.opacity(hovering ? 0.35 : 0), radius: hovering ? 6 : 0, y: hovering ? 2 : 0)
+                // A soft glow under the pointer; the mark itself stays where it is.
+                .shadow(color: hue.opacity(hovering ? 0.35 : 0), radius: hovering ? 6 : 0)
             if named {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(group.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
@@ -310,7 +303,7 @@ struct ProjectMark: View {
     /// colour: squared up at rest, fanned out to the upper right under the pointer or on show.
     /// Under the mark's own translucent face sits an opaque one, so the cards only peek out.
     @ViewBuilder private func cards(shape: RoundedRectangle, hue: Color) -> some View {
-        let fan: CGFloat = !appeared ? 0 : (hovering || shown) ? 1.6 : 1
+        let fan: CGFloat = !appeared ? 0 : shown ? 1.5 : 1
         ZStack {
             ForEach((0..<min(stack, 2)).reversed(), id: \.self) { depth in
                 let step = CGFloat(depth + 1)
@@ -350,11 +343,11 @@ struct ProjectMark: View {
         if waiting > 0 { parts.append("\(waiting) waiting") }
         if failed > 0 { parts.append("\(failed) failed") }
         if working > 0 { parts.append("\(working) working") }
-        return parts.isEmpty ? LiveCountBadge.text(live: live, stopped: stopped) : parts.joined(separator: " · ")
+        return parts.isEmpty ? SessionPips.text(live: live, stopped: stopped) : parts.joined(separator: " · ")
     }
 
     static func summary(_ name: String, live: Int, stopped: Int, waiting: Int, failed: Int, working: Int) -> String {
-        var parts = [LiveCountBadge.text(live: live, stopped: stopped)]
+        var parts = [SessionPips.text(live: live, stopped: stopped)]
         if waiting > 0 { parts.append("\(waiting) waiting for you") }
         if failed > 0 { parts.append("\(failed) stopped with an error") }
         if working > 0 { parts.append("\(working) working") }
@@ -421,8 +414,10 @@ struct RailWorkspaceTitle: View {
                 HStack(spacing: 10) {
                     Text(projects.count == 1 ? "1 project" : "\(projects.count) projects")
                         .foregroundStyle(.tertiary)
-                    LiveCountLabel(count: live, live: true)
-                    LiveCountLabel(count: stopped, live: false)
+                    if live + stopped > 0 {
+                        SessionPips(live: live, stopped: stopped, max: 8, size: 5)
+                        Text(SessionPips.text(live: live, stopped: stopped)).foregroundStyle(.secondary)
+                    }
                 }
                 .font(.system(size: 10.5))
                 .lineLimit(1)
@@ -441,34 +436,38 @@ struct RailWorkspaceTitle: View {
     }
 }
 
-/// How many sessions run and how many are stopped, as one capsule on a rail mark: a green
-/// part for the running ones, a grey part for the stopped ones; a part with none is left out.
-struct LiveCountBadge: View {
+/// A session's state at a glance, one pip each: filled green while it runs, an empty ring while
+/// it is stopped. Past `max` the last place says how many more there are.
+struct SessionPips: View {
     let live: Int
     let stopped: Int
+    var max = 5
+    var size: CGFloat = 5
 
     static func text(live: Int, stopped: Int) -> String {
         if live + stopped == 0 { return "No sessions" }
-        return "\(live) active · \(stopped) stopped"
+        return [live > 0 ? "\(live) running" : nil, stopped > 0 ? "\(stopped) stopped" : nil].compactMap { $0 }.joined(separator: " · ")
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            if live > 0 { part(live, fill: Palette.done, text: .black.opacity(0.8)) }
-            if stopped > 0 { part(stopped, fill: Color(white: 0.38), text: .white.opacity(0.9)) }
+        let total = live + stopped
+        let shown = total > max ? max - 1 : total
+        HStack(spacing: size * 0.6) {
+            ForEach(0..<shown, id: \.self) { index in
+                if index < live {
+                    Circle().fill(Palette.done).frame(width: size, height: size)
+                } else {
+                    Circle().strokeBorder(Color.secondary.opacity(0.8), lineWidth: Swift.max(0.9, size * 0.24)).frame(width: size, height: size)
+                }
+            }
+            if total > max {
+                Text("+\(total - shown)")
+                    .font(.system(size: size * 1.9, weight: .bold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
         }
-        .font(.system(size: 8, weight: .bold).monospacedDigit())
-        .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
         .help(Self.text(live: live, stopped: stopped))
-    }
-
-    private func part(_ number: Int, fill: Color, text: Color) -> some View {
-        Text("\(number)")
-            .foregroundStyle(text)
-            .padding(.horizontal, 3)
-            .frame(minWidth: 12, minHeight: 12)
-            .background(fill)
     }
 }
 
@@ -513,6 +512,9 @@ final class RailState: ObservableObject {
     /// The project the list shows. It follows the selected session, and a click on the strip
     /// moves it, also to a project with no sessions to select.
     @Published var shownGroupID: UUID?
+    /// The workspace on show: the one picked on the rail, also one with no project yet, or the
+    /// one of the project the selection is in.
+    @Published var shownWorkspace: String?
     /// Open under the pointer, lying over what is beside it.
     @Published var open = false
 
@@ -525,6 +527,7 @@ final class RailState: ObservableObject {
     func noteSelection(in store: Store) {
         guard let tab = store.selectedTabID, let group = store.selectedGroup else { return }
         shownGroupID = group.id
+        shownWorkspace = group.workspace
         guard last[group.id.uuidString] != tab.uuidString else { return }
         last[group.id.uuidString] = tab.uuidString
         UserDefaults.standard.set(last, forKey: Self.lastKey)
@@ -534,12 +537,20 @@ final class RailState: ObservableObject {
     /// one to go back to, the session that waits for you, else the one last worked in.
     func show(_ group: TabGroup, in store: Store) {
         shownGroupID = group.id
+        shownWorkspace = group.workspace
         guard store.selectedGroup?.id != group.id else { return }
         let remembered = last[group.id.uuidString].flatMap { id in group.tabs.first { $0.id.uuidString == id } }
         let pick = remembered
             ?? group.tabs.first { store.runtime[$0.id]?.statusState == .blocked }
             ?? group.tabs.max { (store.runtime[$0.id]?.lastActivity ?? .distantPast) < (store.runtime[$1.id]?.lastActivity ?? .distantPast) }
         if let pick { store.selectedTabID = pick.id }
+    }
+
+    /// A workspace picked on the rail: its list, on the project of it last worked in.
+    func showWorkspace(_ name: String, in store: Store) {
+        let projects = store.projects(inWorkspace: name)
+        if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { show(latest, in: store) }
+        shownWorkspace = name
     }
 }
 
@@ -557,11 +568,16 @@ struct StandaloneRail: View {
                 // Whatever misses the strip lands here, not on the session behind it.
                 Color.black.opacity(0.001).onTapGesture { state.open = false }
             }
-            ProjectRail(shownID: state.shownGroupID ?? store.selectedGroup?.id, theme: theme, open: $state.open) { group in
+            ProjectRail(shownID: state.shownGroupID ?? store.selectedGroup?.id, theme: theme, open: $state.open,
+                        shownWorkspace: state.shownWorkspace ?? store.selectedGroup?.workspace) { group in
                 state.show(group, in: store)
                 state.open = false
                 // A project with no sessions has nothing to put in the tabs: its list opens.
                 if group.tabs.isEmpty { reveal() }
+            } pickWorkspace: { name in
+                state.showWorkspace(name, in: store)
+                state.open = false
+                reveal()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -599,9 +615,11 @@ enum ProjectDrag {
 
 /// A rail mark that takes drops: it grows and glows in its colour while something is over it.
 private struct DropLift: ViewModifier {
+    enum Accepts { case sessions, both }
     let key: String
     let hue: Color
     @Binding var target: String?
+    let accepts: Accepts
     let take: @MainActor (ProjectDrag.Item) -> Void
 
     func body(content: Content) -> some View {
@@ -609,10 +627,29 @@ private struct DropLift: ViewModifier {
             .scaleEffect(target == key ? 1.14 : 1)
             .shadow(color: hue.opacity(target == key ? 0.6 : 0), radius: 8)
             .animation(.spring(response: 0.25, dampingFraction: 0.55), value: target)
-            .onDrop(of: [UTType.plainText], isTargeted: Binding(get: { target == key }, set: { over in
-                if over { target = key } else if target == key { target = nil }
-            })) { providers in
-                ProjectDrag.receive(providers, take: take)
-            }
+            .onDrop(of: [UTType.plainText], delegate: RailDropDelegate(key: key, target: $target, accepts: accepts, take: take))
+    }
+}
+
+/// Proposes a move, not the default copy: a row dragged out of the session list allows only a
+/// move, and a copy proposal is turned down without a word.
+private struct RailDropDelegate: DropDelegate {
+    let key: String
+    @Binding var target: String?
+    let accepts: DropLift.Accepts
+    let take: @MainActor (ProjectDrag.Item) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.plainText]) && !info.hasItemsConforming(to: [.fileURL]) }
+    func dropEntered(info: DropInfo) { target = key }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func dropExited(info: DropInfo) { if target == key { target = nil } }
+
+    func performDrop(info: DropInfo) -> Bool {
+        if target == key { target = nil }
+        let accepts = accepts
+        return ProjectDrag.receive(info.itemProviders(for: [.plainText])) { item in
+            if case .project = item, accepts == .sessions { return }
+            take(item)
+        }
     }
 }

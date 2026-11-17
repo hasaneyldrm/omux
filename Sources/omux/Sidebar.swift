@@ -47,7 +47,7 @@ struct Sidebar: View {
     }
 
     /// The workspace the list shows: the one of the project on show.
-    private var shownWorkspace: String? { rail ? shownGroup?.workspace : nil }
+    private var shownWorkspace: String? { rail ? (railState.shownWorkspace ?? shownGroup?.workspace) : nil }
 
     /// The shown project's rows with its header first, as `moveRows` expects; the list leaves the header out.
     /// For a workspace, every project of it, each with its header.
@@ -135,7 +135,9 @@ struct Sidebar: View {
                         Color.black.opacity(0.001).onTapGesture { railState.open = false }
                     }
                     // A click goes to the project, on the session last on show in it.
-                    ProjectRail(shownID: shownGroup?.id, theme: theme, open: $railState.open) { group in railState.show(group, in: store) }
+                    ProjectRail(shownID: shownGroup?.id, theme: theme, open: $railState.open, shownWorkspace: shownWorkspace) { group in
+                        railState.show(group, in: store)
+                    } pickWorkspace: { name in railState.showWorkspace(name, in: store) }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
@@ -175,7 +177,12 @@ struct Sidebar: View {
             // Traffic lights occupy the top-left; actions sit on the right.
             HStack(spacing: 2) {
                 Spacer()
-                Button { if let group = shownGroup, rail { store.newTab(in: group.id) } else { store.newTab() } } label: { Image(systemName: "plus") }
+                Button {
+                    if let name = shownWorkspace, store.projects(inWorkspace: name).isEmpty {
+                        // A workspace with no project yet: the first thing it needs is one.
+                        store.newGroup(inWorkspace: name)
+                    } else if let group = shownGroup, rail { store.newTab(in: group.id) } else { store.newTab() }
+                } label: { Image(systemName: "plus") }
                     .help("New session in current project (⌘T)")
                 if !rail {
                     Button { store.openFolderPanel() } label: { Image(systemName: "folder.badge.plus") }
@@ -195,6 +202,19 @@ struct Sidebar: View {
             Spacer(minLength: 0).frame(height: 1)
             if let name = shownWorkspace {
                 RailWorkspaceTitle(name: name)
+                if store.projects(inWorkspace: name).isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("No projects here yet. A project is a folder; add one, or drag one onto this workspace on the rail.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("New Project in \(name)…") { store.newGroup(inWorkspace: name) }
+                            .controlSize(.small)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else if rail, let group = shownGroup {
                 RailProjectTitle(group: group)
             }
@@ -474,8 +494,7 @@ struct GroupHeader: View {
                 .frame(width: 22, height: 22)
                 .background(hue.opacity(hovering ? 0.26 : 0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 // A small tilt and lift under the pointer.
-                .scaleEffect(hovering ? 1.12 : 1)
-                .rotationEffect(.degrees(hovering ? -6 : 0))
+                .scaleEffect(hovering ? 1.06 : 1)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     if store.renamingID == group.id {
@@ -507,7 +526,7 @@ struct GroupHeader: View {
                 Button { store.newTab(in: group.id, command: "") } label: { Image(systemName: "plus").font(.system(size: 9, weight: .semibold)) }
                     .help("New shell in \(group.name)")
             } else if !group.tabs.isEmpty {
-                LiveCountBadge(live: live, stopped: stopped)
+                SessionPips(live: live, stopped: stopped, max: 6, size: 5.5)
             }
         }
         .buttonStyle(IconButtonStyle(size: 18))
