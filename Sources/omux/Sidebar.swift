@@ -209,7 +209,22 @@ struct Sidebar: View {
                             .selectionDisabled()
                             .listRowSeparator(.hidden)
                     case .tab(let tab, let groupID):
-                        SoftRow(selected: store.selectedTabID == tab.id) { store.selectedTabID = tab.id } content: { TabRow(tab: tab).padding(.leading, rail ? 2 : 8) }
+                        SoftRow(selected: store.selectedTabID == tab.id) { store.selectedTabID = tab.id } content: {
+                            if shownWorkspace != nil {
+                                // Under its project's header, along a line in the project's colour.
+                                TabRow(tab: tab)
+                                    .padding(.leading, 14)
+                                    .overlay(alignment: .leading) {
+                                        Capsule()
+                                            .fill(ProjectMark.hue(store.groups.first { $0.id == groupID }?.name ?? "").opacity(0.35))
+                                            .frame(width: 2)
+                                            .padding(.leading, 4)
+                                            .padding(.vertical, 2)
+                                    }
+                            } else {
+                                TabRow(tab: tab).padding(.leading, rail ? 2 : 8)
+                            }
+                        }
                             .contextMenu { TabMenu(tab: tab, groupID: groupID) }
                             // Dragged onto a terminal's edge, the session is shown there in a pane.
                             // (itemProvider keeps the List's own drag, so reordering and clicks still work.)
@@ -438,13 +453,73 @@ struct GroupHeader: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            if inWorkspace {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.secondary)
-                    .help(group.directory?.tildeAbbreviated ?? "No folder")
+        if inWorkspace { workspaceBody } else { plainBody }
+    }
+
+    /// Among a workspace's projects: the project's own coloured mark, its name over its
+    /// folder, and how many of its sessions run and how many are stopped. A hairline above
+    /// sets it apart from the project before.
+    private var workspaceBody: some View {
+        let hue = ProjectMark.hue(group.name)
+        let (live, stopped) = store.liveCounts(group.tabs)
+        return HStack(spacing: 9) {
+            Text(ProjectMark.initials(group.name))
+                .font(.system(size: 9, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .foregroundStyle(hue)
+                .frame(width: 22, height: 22)
+                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    if store.renamingID == group.id {
+                        RenameField(initial: group.name) { store.rename(group.id, to: $0) }
+                    } else {
+                        Text(group.name)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    }
+                    if let host = group.host, group.isRemote { MachineBadge(host: host) }
+                }
+                if let directory = group.directory, !directory.isEmpty {
+                    Text(directory.tildeAbbreviated)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
             }
+            Spacer(minLength: 4)
+            if hovering {
+                Button { store.updateGroup(group.id) { $0.isCollapsed.toggle() } } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .rotationEffect(.degrees(group.isCollapsed ? 0 : 90))
+                }
+                .help(group.isCollapsed ? "Show sessions" : "Hide sessions")
+                Button { store.newTab(in: group.id, command: "") } label: { Image(systemName: "plus").font(.system(size: 9, weight: .semibold)) }
+                    .help("New shell in \(group.name)")
+            } else if !group.tabs.isEmpty {
+                LiveCountBadge(live: live, stopped: stopped)
+            }
+        }
+        .buttonStyle(IconButtonStyle(size: 18))
+        .foregroundStyle(.secondary)
+        .padding(.top, 12)
+        .padding(.bottom, 2)
+        .overlay(alignment: .top) { Rectangle().fill(.primary.opacity(0.06)).frame(height: 1).padding(.top, 2) }
+        .opacity(live == 0 && !hovering ? 0.75 : 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { store.updateGroup(group.id) { $0.isCollapsed.toggle() } }
+        .onHover { hovering = $0 }
+        .listRowSeparator(.hidden)
+        .contextMenu { GroupMenu(group: group) }
+    }
+
+    private var plainBody: some View {
+        HStack(spacing: 6) {
             if store.renamingID == group.id {
                 RenameField(initial: group.name) { store.rename(group.id, to: $0) }
             } else {

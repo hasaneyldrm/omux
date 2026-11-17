@@ -188,7 +188,7 @@ struct ProjectRail: View {
 /// the project's own, and a dot on the corner for the most pressing state among its sessions
 /// (waiting, failed, working). The one on show fills softly with its colour and has a bar at
 /// the strip's edge.
-private struct ProjectMark: View {
+struct ProjectMark: View {
     @EnvironmentObject var store: Store
     let group: TabGroup
     let shown: Bool
@@ -212,6 +212,7 @@ private struct ProjectMark: View {
         let waiting = states.filter { $0.statusState == .blocked || $0.needsAttention }.count
         let failed = states.filter { $0.statusState == .error }.count
         let working = states.filter { $0.statusState == .working }.count
+        let (live, stopped) = store.liveCounts(group.tabs)
         let state: Color? = waiting > 0 ? Palette.needs : failed > 0 ? Palette.error : working > 0 ? Palette.working : nil
         let hue = Self.hue(group.name)
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -240,17 +241,12 @@ private struct ProjectMark: View {
                 }
                 .background { if stack > 0 { cards(shape: shape, hue: hue) } }
                 .overlay(alignment: .bottomTrailing) {
-                    if stack > 0 {
-                        Text("\(stack)")
-                            .font(.system(size: 8, weight: .bold).monospacedDigit())
-                            .foregroundStyle(.black.opacity(0.8))
-                            .padding(.horizontal, 3)
-                            .frame(minWidth: 12, minHeight: 12)
-                            .background(hue, in: Capsule())
-                            .overlay(Capsule().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                            .offset(x: 4, y: 4)
-                            .scaleEffect(appeared ? 1 : 0.4)
-                            .opacity(appeared ? 1 : 0)
+                    // How many sessions run and how many are stopped, green then grey.
+                    if !group.tabs.isEmpty {
+                        LiveCountBadge(live: live, stopped: stopped)
+                            .offset(x: 6, y: 5)
+                            .scaleEffect(appeared || stack == 0 ? 1 : 0.4)
+                            .opacity(appeared || stack == 0 ? 1 : 0)
                     }
                 }
                 .overlay(alignment: .topTrailing) {
@@ -265,8 +261,8 @@ private struct ProjectMark: View {
             if named {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(group.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
-                    Text(detail.map { waiting + failed + working == 0 ? $0 : $0 + " · " + Self.doing(sessions: group.tabs.count, waiting: waiting, failed: failed, working: working) }
-                         ?? Self.doing(sessions: group.tabs.count, waiting: waiting, failed: failed, working: working))
+                    let doing = Self.doing(live: live, stopped: stopped, waiting: waiting, failed: failed, working: working)
+                    Text(detail.map { $0 + " · " + doing } ?? doing)
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -282,7 +278,7 @@ private struct ProjectMark: View {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.6).delay(0.05)) { appeared = true }
         }
         // Open, the strip says all this itself.
-        .help(named ? "" : Self.summary(group.name, sessions: group.tabs.count, waiting: waiting, failed: failed, working: working))
+        .help(named ? "" : Self.summary(group.name, live: live, stopped: stopped, waiting: waiting, failed: failed, working: working))
     }
 
     /// The cards behind a workspace's mark, one per project up to two, in the workspace's
@@ -323,17 +319,17 @@ private struct ProjectMark: View {
         return letters.isEmpty ? "·" : letters.uppercased()
     }
 
-    /// "1 waiting · 1 failed", or the number of sessions when nothing is going on.
-    static func doing(sessions: Int, waiting: Int, failed: Int, working: Int) -> String {
+    /// "1 waiting · 1 failed", or how many sessions run and are stopped when nothing is going on.
+    static func doing(live: Int, stopped: Int, waiting: Int, failed: Int, working: Int) -> String {
         var parts: [String] = []
         if waiting > 0 { parts.append("\(waiting) waiting") }
         if failed > 0 { parts.append("\(failed) failed") }
         if working > 0 { parts.append("\(working) working") }
-        return parts.isEmpty ? "\(sessions) session\(sessions == 1 ? "" : "s")" : parts.joined(separator: " · ")
+        return parts.isEmpty ? LiveCountBadge.text(live: live, stopped: stopped) : parts.joined(separator: " · ")
     }
 
-    static func summary(_ name: String, sessions: Int, waiting: Int, failed: Int, working: Int) -> String {
-        var parts = ["\(sessions) session\(sessions == 1 ? "" : "s")"]
+    static func summary(_ name: String, live: Int, stopped: Int, waiting: Int, failed: Int, working: Int) -> String {
+        var parts = [LiveCountBadge.text(live: live, stopped: stopped)]
         if waiting > 0 { parts.append("\(waiting) waiting for you") }
         if failed > 0 { parts.append("\(failed) stopped with an error") }
         if working > 0 { parts.append("\(working) working") }
@@ -385,24 +381,26 @@ struct RailWorkspaceTitle: View {
     var body: some View {
         let projects = store.projects(inWorkspace: name)
         let hue = ProjectMark.hue(name)
-        HStack(spacing: 8) {
-            Image(systemName: "square.stack.3d.up.fill")
-                .font(.system(size: 13, weight: .semibold))
+        let (live, stopped) = store.liveCounts(projects.flatMap(\.tabs))
+        HStack(spacing: 10) {
+            Text(ProjectMark.initials(name))
+                .font(.system(size: 12, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(hue)
-                .frame(width: 26, height: 26)
-                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("WORKSPACE")
-                    .font(.system(size: 8.5, weight: .bold))
-                    .tracking(0.8)
-                    .foregroundStyle(hue.opacity(0.9))
-                HStack(spacing: 5) {
-                    Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                .frame(width: 32, height: 32)
+                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(hue.opacity(0.45), lineWidth: 1))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                HStack(spacing: 10) {
                     Text(projects.count == 1 ? "1 project" : "\(projects.count) projects")
-                        .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                    LiveCountLabel(count: live, live: true)
+                    LiveCountLabel(count: stopped, live: false)
                 }
+                .font(.system(size: 10.5))
+                .lineLimit(1)
             }
         }
         .id(name)
@@ -410,10 +408,61 @@ struct RailWorkspaceTitle: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.75), value: name)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
-        .padding(.top, 2)
-        .padding(.bottom, 6)
+        .padding(.top, 4)
+        .padding(.bottom, 10)
+        .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.07)).frame(height: 1).padding(.horizontal, 14) }
         .contentShape(Rectangle())
         .contextMenu { WorkspaceMenu(name: name) }
+    }
+}
+
+/// How many sessions run and how many are stopped, as one capsule on a rail mark: a green
+/// part for the running ones, a grey part for the stopped ones; a part with none is left out.
+struct LiveCountBadge: View {
+    let live: Int
+    let stopped: Int
+
+    static func text(live: Int, stopped: Int) -> String {
+        if live + stopped == 0 { return "No sessions" }
+        return "\(live) active · \(stopped) stopped"
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if live > 0 { part(live, fill: Palette.done, text: .black.opacity(0.8)) }
+            if stopped > 0 { part(stopped, fill: Color(white: 0.38), text: .white.opacity(0.9)) }
+        }
+        .font(.system(size: 8, weight: .bold).monospacedDigit())
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+        .help(Self.text(live: live, stopped: stopped))
+    }
+
+    private func part(_ number: Int, fill: Color, text: Color) -> some View {
+        Text("\(number)")
+            .foregroundStyle(text)
+            .padding(.horizontal, 3)
+            .frame(minWidth: 12, minHeight: 12)
+            .background(fill)
+    }
+}
+
+/// "● 2 active" or "○ 1 stopped", for headings and project headers.
+struct LiveCountLabel: View {
+    let count: Int
+    let live: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(live ? Palette.done : Color.clear)
+                .overlay(Circle().strokeBorder(live ? Color.clear : Color.secondary.opacity(0.7), lineWidth: 1.2))
+                .frame(width: 6, height: 6)
+            Text("\(count) \(live ? "active" : "stopped")")
+                .monospacedDigit()
+                .foregroundStyle(live && count > 0 ? AnyShapeStyle(.primary.opacity(0.85)) : AnyShapeStyle(.secondary))
+        }
+        .opacity(count == 0 ? 0.55 : 1)
     }
 }
 

@@ -1603,6 +1603,19 @@ final class Store: ObservableObject {
         groups.filter { $0.workspace == name }
     }
 
+    /// A session with an agent or a program running in it. The rest are stopped: never
+    /// started since launch, or ended.
+    func isLive(_ tab: TabItem) -> Bool {
+        guard let rt = runtime[tab.id], !rt.exited else { return false }
+        return rt.agentConnected || rt.busy || rt.statusState != nil
+    }
+
+    /// How many of these sessions run, and how many are stopped.
+    func liveCounts(_ tabs: [TabItem]) -> (live: Int, stopped: Int) {
+        let live = tabs.filter(isLive).count
+        return (live, tabs.count - live)
+    }
+
     /// Puts a project in a workspace, or takes it out of one with nil.
     func setWorkspace(_ groupID: UUID, _ name: String?) {
         let name = name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
