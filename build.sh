@@ -85,8 +85,8 @@ if [[ "$MODE" == "install" ]]; then
   # each other in /Applications without Accessibility, Screen Recording and folder grants
   # starting over; without it, the Apple Development certificate, then an ad-hoc signature.
   IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
-  IDENTITY=$(echo "$IDENTITIES" | grep "Developer ID Application" | head -1 | awk '{print $2}')
-  [[ -z "$IDENTITY" ]] && IDENTITY=$(echo "$IDENTITIES" | grep "Apple Development" | head -1 | awk '{print $2}')
+  IDENTITY=$(echo "$IDENTITIES" | grep "Developer ID Application" | head -1 | awk '{print $2}' || true)
+  [[ -z "$IDENTITY" ]] && IDENTITY=$(echo "$IDENTITIES" | grep "Apple Development" | head -1 | awk '{print $2}' || true)
   sign_sparkle "${IDENTITY:--}"
   codesign --force --sign "${IDENTITY:--}" "$APP/Contents/Resources/bin/omux" 2>&1 | without "replacing existing signature"
   codesign --force --sign "${IDENTITY:--}" "$APP" 2>&1 | without "replacing existing signature"
