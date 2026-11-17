@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // The rail layout of the sidebar: every project is a mark on a narrow strip, and the list
 // beside it shows the sessions of the one picked. However many projects there are, each is one
@@ -16,6 +17,8 @@ struct ProjectRail: View {
     @State private var hover = 0
     /// The idle projects are listed under their stack instead of folded into it.
     @State private var idleListed = false
+    /// The workspace mark a dragged project is over, lit to say it takes the project.
+    @State private var dropTarget: String?
 
     static let width: CGFloat = 46
     static let openWidth: CGFloat = 196
@@ -66,6 +69,8 @@ struct ProjectRail: View {
         case .project(let group):
             ProjectMark(group: group, shown: group.id == shownID, named: open, quiet: quiet) { pick(group) }
                 .contextMenu { GroupMenu(group: group) }
+                // Dragged onto a workspace's mark, the project goes into that workspace.
+                .onDrag { ProjectDrag.provider(group.id) }
         case .workspace(let name, let projects):
             // Drawn as a project holding every session of the workspace, so its dot tells the
             // most pressing state among all of them.
@@ -75,6 +80,14 @@ struct ProjectRail: View {
                 if let latest = projects.max(by: { store.lastActivity($0) < store.lastActivity($1) }) { pick(latest) }
             }
             .contextMenu { WorkspaceMenu(name: name) }
+            .scaleEffect(dropTarget == name ? 1.14 : 1)
+            .shadow(color: ProjectMark.hue(name).opacity(dropTarget == name ? 0.6 : 0), radius: 8)
+            .animation(.spring(response: 0.25, dampingFraction: 0.55), value: dropTarget)
+            .onDrop(of: [UTType.plainText], isTargeted: Binding(get: { dropTarget == name }, set: { over in
+                if over { dropTarget = name } else if dropTarget == name { dropTarget = nil }
+            })) { providers in
+                ProjectDrag.receive(providers) { id in store.setWorkspace(id, name) }
+            }
         }
     }
 
@@ -258,6 +271,10 @@ struct ProjectMark: View {
                     }
                 }
                 .opacity(quiet && !shown && !hovering ? 0.55 : 1)
+                // A small lift under the pointer.
+                .scaleEffect(hovering ? 1.08 : 1)
+                .offset(y: hovering ? -1.5 : 0)
+                .shadow(color: hue.opacity(hovering ? 0.35 : 0), radius: hovering ? 6 : 0, y: hovering ? 2 : 0)
             if named {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(group.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
@@ -540,5 +557,25 @@ struct StandaloneRail: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+}
+
+/// A project carried by drag and drop, as text with a prefix so a session's id (dragged onto
+/// a pane) is never taken for it.
+enum ProjectDrag {
+    static let prefix = "omux-project:"
+
+    static func provider(_ id: UUID) -> NSItemProvider {
+        NSItemProvider(object: (prefix + id.uuidString) as NSString)
+    }
+
+    /// Calls `take` on the main thread with the dropped project's id; false when none is in it.
+    static func receive(_ providers: [NSItemProvider], take: @escaping @MainActor (UUID) -> Void) -> Bool {
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let text = object as? String, text.hasPrefix(prefix), let id = UUID(uuidString: String(text.dropFirst(prefix.count))) else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { take(id) } }
+        }
+        return true
     }
 }

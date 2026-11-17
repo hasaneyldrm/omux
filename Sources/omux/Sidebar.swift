@@ -436,6 +436,9 @@ struct TabRow: View {
         }
         .buttonStyle(.plain)
         .opacity(rt.exited && !hovering ? 0.55 : 1)
+        // A small nudge under the pointer.
+        .offset(x: hovering ? 2 : 0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.65), value: hovering)
         .padding(.vertical, compact ? 0 : 3)
         .help(compact ? ([tab.worktree?.branch, rt.statusLine(showFolder: true), agentCount].compactMap { $0 }.joined(separator: " · ")) : "")
         .onHover { over in
@@ -469,7 +472,10 @@ struct GroupHeader: View {
                 .minimumScaleFactor(0.7)
                 .foregroundStyle(hue)
                 .frame(width: 22, height: 22)
-                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(hue.opacity(hovering ? 0.26 : 0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                // A small tilt and lift under the pointer.
+                .scaleEffect(hovering ? 1.12 : 1)
+                .rotationEffect(.degrees(hovering ? -6 : 0))
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     if store.renamingID == group.id {
@@ -513,7 +519,9 @@ struct GroupHeader: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { store.updateGroup(group.id) { $0.isCollapsed.toggle() } }
-        .onHover { hovering = $0 }
+        .onHover { over in withAnimation(.spring(response: 0.28, dampingFraction: 0.6)) { hovering = over } }
+        // Dragged onto another workspace's mark on the rail, the project moves there.
+        .itemProvider { ProjectDrag.provider(group.id) }
         .listRowSeparator(.hidden)
         .contextMenu { GroupMenu(group: group) }
     }
