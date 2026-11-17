@@ -127,6 +127,10 @@ struct TabGroup: Identifiable, Codable, Hashable {
     /// is then a folder on that machine. nil for a project on this Mac.
     var host: String?
     var isRemote: Bool { !(host ?? "").isEmpty }
+    /// The workspace the project belongs to, by name: projects of one workspace share one mark
+    /// on the rail and are listed together beside it. A workspace is only this name, with no
+    /// folder of its own; each of its projects keeps its folder. nil for a project on its own.
+    var workspace: String?
     var tabs: [TabItem] = []
 
     init(name: String, directory: String? = nil, tabs: [TabItem] = []) {
@@ -152,6 +156,7 @@ struct TabGroup: Identifiable, Codable, Hashable {
         forcedIdle = try c.decodeIfPresent(Bool.self, forKey: .forcedIdle) ?? false
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         host = try c.decodeIfPresent(String.self, forKey: .host)
+        workspace = try c.decodeIfPresent(String.self, forKey: .workspace)
         tabs = try c.decodeIfPresent([TabItem].self, forKey: .tabs) ?? []
     }
 }
@@ -161,12 +166,14 @@ struct Workspace: Codable {
     var selectedTabID: UUID?
     /// Each project's panes, by project id, when it showed more than one session.
     var layouts: [String: PaneLayout] = [:]
+    /// The workspaces in their order on the rail, also the ones with no project yet.
+    var workspaces: [String] = []
 
-    init(groups: [TabGroup] = [], selectedTabID: UUID? = nil, layouts: [String: PaneLayout] = [:]) {
-        self.groups = groups; self.selectedTabID = selectedTabID; self.layouts = layouts
+    init(groups: [TabGroup] = [], selectedTabID: UUID? = nil, layouts: [String: PaneLayout] = [:], workspaces: [String] = []) {
+        self.groups = groups; self.selectedTabID = selectedTabID; self.layouts = layouts; self.workspaces = workspaces
     }
 
-    private enum CodingKeys: String, CodingKey { case groups, selectedTabID, layouts, layout }
+    private enum CodingKeys: String, CodingKey { case groups, selectedTabID, layouts, layout, workspaces }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -174,6 +181,7 @@ struct Workspace: Codable {
         selectedTabID = try? c.decodeIfPresent(UUID.self, forKey: .selectedTabID)
         // Layouts a newer version wrote that can't be read are dropped, not the whole workspace.
         layouts = (try? c.decodeIfPresent([String: PaneLayout].self, forKey: .layouts)) ?? [:]
+        workspaces = (try? c.decodeIfPresent([String].self, forKey: .workspaces)) ?? []
         // Before layouts were per project there was one; it belongs to its first session's project.
         if layouts.isEmpty, let single = try? c.decodeIfPresent(PaneLayout.self, forKey: .layout), let first = single.ids.first,
            let group = groups.first(where: { $0.tabs.contains { $0.id == first } }) {
@@ -186,6 +194,7 @@ struct Workspace: Codable {
         try c.encode(groups, forKey: .groups)
         try c.encodeIfPresent(selectedTabID, forKey: .selectedTabID)
         try c.encode(layouts, forKey: .layouts)
+        if !workspaces.isEmpty { try c.encode(workspaces, forKey: .workspaces) }
     }
 }
 

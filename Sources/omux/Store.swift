@@ -35,6 +35,9 @@ final class Store: ObservableObject {
     static let shared = Store()
 
     @Published var groups: [TabGroup]
+    /// The workspaces in their order on the rail. They keep their place: what moves is the
+    /// projects in them and the sessions in those.
+    @Published var workspaceOrder: [String] = []
     @Published var selectedTabID: UUID? {
         didSet {
             // Deferred: this fires inside the List's selection update.
@@ -128,6 +131,7 @@ final class Store: ObservableObject {
             groups = [TabGroup(name: "Default", tabs: [TabItem(name: "Session 1")])]
         }
         self.groups = groups
+        self.workspaceOrder = saved?.workspaces ?? []
         let allIDs = Set(groups.flatMap { $0.tabs.map(\.id) })
         if let sel = saved?.selectedTabID, allIDs.contains(sel) {
             selectedTabID = sel
@@ -144,6 +148,10 @@ final class Store: ObservableObject {
             .sink { [weak self] _ in self?.save() }
             .store(in: &cancellables)
         $layouts.dropFirst()
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.save() }
+            .store(in: &cancellables)
+        $workspaceOrder.dropFirst()
             .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.save() }
             .store(in: &cancellables)
@@ -1591,6 +1599,82 @@ final class Store: ObservableObject {
         selectedTabID = id
     }
 
+    // MARK: Workspaces
+
+    /// Workspace names in their order on the rail; one only a project names comes after.
+    var workspaceNames: [String] {
+        var seen = Set<String>()
+        return (workspaceOrder + groups.compactMap(\.workspace)).filter { seen.insert($0).inserted }
+    }
+
+    /// A workspace with no project yet, at the end of the rail.
+    func createWorkspace(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        workspaceOrder = workspaceNames
+        if !workspaceOrder.contains(name) { workspaceOrder.append(name) }
+    }
+
+    func projects(inWorkspace name: String) -> [TabGroup] {
+        groups.filter { $0.workspace == name }
+    }
+
+    /// A session with an agent or a program running in it. The rest are stopped: never
+    /// started since launch, or ended.
+    func isLive(_ tab: TabItem) -> Bool {
+        guard let rt = runtime[tab.id], !rt.exited else { return false }
+        return rt.agentConnected || rt.busy || rt.statusState != nil
+    }
+
+    /// How many of these sessions run, and how many are stopped.
+    func liveCounts(_ tabs: [TabItem]) -> (live: Int, stopped: Int) {
+        let live = tabs.filter(isLive).count
+        return (live, tabs.count - live)
+    }
+
+    /// Puts a project in a workspace, or takes it out of one with nil.
+    func setWorkspace(_ groupID: UUID, _ name: String?) {
+        let name = name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        if let name { createWorkspace(name) }
+        updateGroup(groupID) { $0.workspace = name }
+    }
+
+    func renameWorkspace(_ old: String, to new: String) {
+        let new = new.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !new.isEmpty, new != old else { return }
+        workspaceOrder = workspaceNames.map { $0 == old ? new : $0 }
+        for index in groups.indices where groups[index].workspace == old { groups[index].workspace = new }
+    }
+
+    /// The workspace goes; its projects stay, each on its own again.
+    func ungroupWorkspace(_ name: String) {
+        workspaceOrder = workspaceNames.filter { $0 != name }
+        for index in groups.indices where groups[index].workspace == name { groups[index].workspace = nil }
+    }
+
+    /// A new project, folder first, made right inside the workspace.
+    func newGroup(inWorkspace name: String) {
+        let before = Set(groups.map(\.id))
+        newGroup()
+        for index in groups.indices where !before.contains(groups[index].id) { groups[index].workspace = name }
+    }
+
+    /// Asks for a workspace's name; nil when cancelled or left empty.
+    static func askWorkspaceName(title: String, initial: String = "") -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = "A workspace gathers projects under one mark on the rail. It has no folder; its projects keep theirs."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = initial
+        field.placeholderString = "Workspace name"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
     func newGroup() {
         // A project is a folder first; cancelling still makes one, named by hand, with no agent yet.
         let folder = Self.chooseFolder(prompt: "Choose the project's folder")
@@ -1716,7 +1800,8 @@ final class Store: ObservableObject {
 
     private func save() {
         Persistence.save(Workspace(groups: groups, selectedTabID: selectedTabID,
-                                   layouts: Dictionary(uniqueKeysWithValues: layouts.map { ($0.key.uuidString, $0.value) })))
+                                   layouts: Dictionary(uniqueKeysWithValues: layouts.map { ($0.key.uuidString, $0.value) }),
+                                   workspaces: workspaceNames))
     }
 
     func applyAppearance() {
