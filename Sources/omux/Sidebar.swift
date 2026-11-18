@@ -477,11 +477,8 @@ struct SidebarDropTarget: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(GeometryReader { proxy in
-                Color.clear
-                    .onAppear { height = proxy.size.height }
-                    .onChange(of: proxy.size.height) { _, new in height = new }
-            })
+            // Only the drop delegate reads the height: no GeometryReader view in every row.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .onDrop(of: [UTType.plainText], delegate: ListDropDelegate(key: key, height: height, resolve: resolve, perform: perform))
     }
 }
@@ -604,10 +601,15 @@ final class TranscriptDates {
 
 struct TabRow: View {
     @EnvironmentObject var store: Store
-    @ObservedObject private var monitor = AgentMonitor.shared
+    @ObservedObject private var agentSlice: AgentMonitor.Slice
     @ObservedObject private var pulls = PullRequestMonitor.shared
     @ObservedObject private var diffStats = DiffStatMonitor.shared
     let tab: TabItem
+
+    init(tab: TabItem) {
+        self.tab = tab
+        _agentSlice = ObservedObject(wrappedValue: AgentMonitor.shared.slice(tab.id))
+    }
     @State private var pointerOver = false
     @Environment(\.hoverBlocked) private var hoverBlocked
     /// Under the pointer, and nothing lying over the row.
@@ -619,7 +621,7 @@ struct TabRow: View {
     /// "2 agents" while subagents run; the selected session lists them instead.
     private var agentCount: String? {
         guard store.selectedTabID != tab.id else { return nil }
-        let running = (monitor.agents[tab.id] ?? []).filter { !$0.finished }.count
+        let running = agentSlice.agents.filter { !$0.finished }.count
         return running > 0 ? "\(running) agent\(running == 1 ? "" : "s")" : nil
     }
 
@@ -725,7 +727,7 @@ struct TabRow: View {
         .help(compact ? ([tab.worktree?.branch, rt.statusLine(showFolder: true), agentCount].compactMap { $0 }.joined(separator: " · ")) : "")
         .onHover { over in
             pointerOver = over
-            if over, !hoverBlocked { store.refreshBusy(tab.id) }
+            if over, !hoverBlocked { store.refreshBusyOnHover(tab.id) }
         }
     }
 }
@@ -986,12 +988,14 @@ struct GroupMenu: View {
         }
         Menu("Workspace") {
             ForEach(store.workspaceNames, id: \.self) { name in
-                Toggle(name, isOn: Binding(get: { group.workspace == name }, set: { if $0 { store.setWorkspace(group.id, name) } }))
+                Toggle(name, isOn: Binding(get: { group.workspace == name }, set: { store.setWorkspace(group.id, $0 ? name : nil) }))
             }
             if !store.workspaceNames.isEmpty { Divider() }
             Button("New Workspace") {
                 let name = store.newWorkspace(with: group.id)
                 RailState.shared.showWorkspace(name, in: store)
+                // Named in place only where workspaces show: on the rail.
+                if UserDefaults.standard.string(forKey: Prefs.sidebarLayout) ?? "rail" != "rail" { store.renamingWorkspace = nil }
             }
             if group.workspace != nil {
                 Button("Take Out of Workspace") { store.setWorkspace(group.id, nil) }

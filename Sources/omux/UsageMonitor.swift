@@ -38,12 +38,22 @@ final class UsageMonitor: ObservableObject {
     @Published private(set) var detail: String?
 
     private var timer: Timer?
+    /// One for the app: the rail, the standalone rail and the list each show it, and each
+    /// used to poll on its own, reading the Keychain and asking the endpoint every time one
+    /// appeared.
+    static let shared = UsageMonitor()
+    /// How many views show the limits; polling runs while there is one.
+    private var watchers = 0
+    private var lastLoad: Date?
 
-    /// Polls at the interval chosen in Settings (seconds); re-arms when it changes.
+    /// Polls at the interval chosen in Settings (seconds); re-arms when it changes. A view
+    /// appearing reloads only when the last answer is more than a minute old.
     func start() {
+        watchers += 1
+        guard watchers == 1 else { return }
         let interval = UserDefaults.standard.double(forKey: Prefs.usageInterval)
         schedule(every: interval > 0 ? interval : 300)
-        refresh()
+        if lastLoad.map({ Date().timeIntervalSince($0) > 60 }) ?? true { refresh() }
     }
 
     func schedule(every seconds: TimeInterval) {
@@ -54,11 +64,14 @@ final class UsageMonitor: ObservableObject {
     }
 
     func stop() {
+        watchers = max(0, watchers - 1)
+        guard watchers == 0 else { return }
         timer?.invalidate()
         timer = nil
     }
 
     func refresh() {
+        lastLoad = Date()
         Task { await load() }
     }
 

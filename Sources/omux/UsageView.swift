@@ -4,7 +4,7 @@ import SwiftUI
 /// hairline bar. Hovering a limit swaps its text for the reset time.
 struct UsageView: View {
     @EnvironmentObject var store: Store
-    @StateObject private var monitor = UsageMonitor()
+    @ObservedObject private var monitor = UsageMonitor.shared
     @ObservedObject private var codex = CodexManager.shared
     @AppStorage(Prefs.usageInterval) private var usageInterval = 300.0
 

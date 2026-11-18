@@ -762,6 +762,9 @@ struct PaneTree: View {
     let node: PaneLayout
     let theme: Theme
     var path: [Bool] = []
+    /// The divider's place while it is dragged. Kept here, and written to the store once when
+    /// the drag ends: the store publishing on every mouse move redrew the whole sidebar.
+    @State private var dragFraction: Double?
 
     var body: some View {
         switch node {
@@ -776,7 +779,7 @@ struct PaneTree: View {
         case .split(let axis, let fraction, let first, let second):
             GeometryReader { geo in
                 let total = axis == .horizontal ? geo.size.width : geo.size.height
-                let firstSize = (total * fraction).rounded()
+                let firstSize = (total * (dragFraction ?? fraction)).rounded()
                 let handle = Rectangle().fill(Color.clear).contentShape(Rectangle())
                     .frame(width: axis == .horizontal ? 10 : nil, height: axis == .vertical ? 10 : nil)
                     .onHover { inside in
@@ -785,7 +788,11 @@ struct PaneTree: View {
                     .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("pane-split"))
                         .onChanged { value in
                             let position = axis == .horizontal ? value.location.x : value.location.y
-                            store.resizePane(path: path, fraction: position / max(total, 1))
+                            dragFraction = min(max(position / max(total, 1), 0.15), 0.85)
+                        }
+                        .onEnded { _ in
+                            if let dragFraction { store.resizePane(path: path, fraction: dragFraction) }
+                            dragFraction = nil
                         })
                 ZStack(alignment: .topLeading) {
                     if axis == .horizontal {
@@ -1010,7 +1017,14 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appInfo) { CheckForUpdatesButton() }
         CommandGroup(replacing: .newItem) {
-            Button("New Session") { store.newTab() }.keyboardShortcut("t")
+            Button("New Session") {
+                // With a workspace on show, in it: the list in view is where the session lands.
+                if UserDefaults.standard.string(forKey: Prefs.sidebarLayout) ?? "rail" == "rail", let workspace = RailState.shared.shownWorkspace {
+                    store.newSession(inWorkspace: workspace)
+                } else {
+                    store.newTab()
+                }
+            }.keyboardShortcut("t")
             Button("New Codex Session") { store.newTab(command: "codex") }
             Button("New Claude Code Session") { store.newTab(command: "claude") }
             Button("New Shell") { store.newTab(command: "") }.keyboardShortcut("t", modifiers: [.command, .shift])

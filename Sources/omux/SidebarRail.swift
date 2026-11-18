@@ -479,6 +479,9 @@ struct WorkspaceNameField: View {
             .onSubmit { finish(save: true) }
             .onExitCommand { finish(save: false) }
             .onChange(of: focused) { _, now in if !now { finish(save: true) } }
+            // Another workspace shown before Return: keep what was typed, and don't leave the
+            // field waiting to reappear the next time this one is shown.
+            .onDisappear { finish(save: true) }
     }
 
     private func finish(save: Bool) {

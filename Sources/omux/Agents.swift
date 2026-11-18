@@ -28,6 +28,20 @@ final class AgentMonitor: ObservableObject {
 
     /// Agents worth showing per session: running ones, and finished ones for a short while.
     @Published private(set) var agents: [UUID: [SubAgent]] = [:]
+    /// One session's agents, for the views of that session alone: a subagent at work in one
+    /// session used to redraw every row of the sidebar several times a second.
+    final class Slice: ObservableObject {
+        @Published var agents: [SubAgent] = []
+    }
+    private var slices: [UUID: Slice] = [:]
+
+    func slice(_ id: UUID) -> Slice {
+        if let slice = slices[id] { return slice }
+        let slice = Slice()
+        slice.agents = agents[id] ?? []
+        slices[id] = slice
+        return slice
+    }
     private let scanner = AgentScanner()
     private let queue = DispatchQueue(label: "omux.agents", qos: .utility)
     private var scanning = false
@@ -107,7 +121,11 @@ final class AgentMonitor: ObservableObject {
                     if result[tab]?.isEmpty == true { result[tab] = nil }
                 }
                 self.stopped = self.stopped.filter { now.timeIntervalSince($0.value) < 3600 }
-                if result != self.agents { self.agents = result }
+                if result != self.agents {
+                    self.agents = result
+                    // Each row watches only its own session's agents.
+                    for (id, slice) in self.slices where slice.agents != (result[id] ?? []) { slice.agents = result[id] ?? [] }
+                }
                 self.scheduleExpiry(of: result, now: now)
             }
         }
@@ -303,13 +321,19 @@ struct AgentDot: View {
 /// and agents that need you in any session.
 struct AgentRows: View {
     @EnvironmentObject var store: Store
-    @ObservedObject private var monitor = AgentMonitor.shared
+    @ObservedObject private var slice: AgentMonitor.Slice
     let tabID: UUID
     let selected: Bool
     @State private var showAll = false
 
+    init(tabID: UUID, selected: Bool) {
+        self.tabID = tabID
+        self.selected = selected
+        _slice = ObservedObject(wrappedValue: AgentMonitor.shared.slice(tabID))
+    }
+
     var body: some View {
-        let all = monitor.agents[tabID] ?? []
+        let all = slice.agents
         let visible = selected ? all : all.filter(\.blocked)
         if !visible.isEmpty {
             VStack(alignment: .leading, spacing: 2) {

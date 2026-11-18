@@ -805,6 +805,19 @@ final class Store: ObservableObject {
     }
 
     /// Re-checks whether the shell has a child process (claude, a build, …).
+    /// When the pointer last checked each session; see `refreshBusyOnHover`.
+    private var hoverChecked: [UUID: Date] = [:]
+
+    /// The pointer passing over a row: checks whether its shell runs something, at most every
+    /// two seconds a row. Each check reads the whole process table, and moving down the list
+    /// used to do that once per row.
+    func refreshBusyOnHover(_ id: UUID) {
+        let now = Date()
+        if let last = hoverChecked[id], now.timeIntervalSince(last) < 2 { return }
+        hoverChecked[id] = now
+        refreshBusy(id)
+    }
+
     func refreshBusy(_ id: UUID) {
         guard let view = terminals[id], !(runtime[id]?.exited ?? true) else { return }
         // A remote session's shell isn't a process here: its agent says so itself when it runs.
@@ -1483,7 +1496,11 @@ final class Store: ObservableObject {
         groups[loc.group].tabs.remove(at: loc.tab)
         if selectedTabID == id {
             let siblings = groups[loc.group].tabs
-            selectedTabID = nextPane ?? (siblings.isEmpty ? allTabs.first?.tab.id : siblings[min(loc.tab, siblings.count - 1)].id)
+            // The project's last session gone: another of its workspace, so the list beside the
+            // rail doesn't jump to an unrelated project.
+            let workspace = groups[loc.group].workspace
+            let neighbour = workspace.flatMap { ws in groups.filter { $0.workspace == ws }.flatMap(\.tabs).first?.id }
+            selectedTabID = nextPane ?? (siblings.isEmpty ? (neighbour ?? (workspace == nil ? allTabs.first?.tab.id : nil)) : siblings[min(loc.tab, siblings.count - 1)].id)
         }
     }
 
@@ -1549,10 +1566,14 @@ final class Store: ObservableObject {
     }
 
     func moveTab(_ id: UUID, toGroup groupID: UUID) {
-        guard let loc = location(of: id), let gi = groups.firstIndex(where: { $0.id == groupID }), groups[loc.group].id != groupID else { return }
-        let tab = groups[loc.group].tabs.remove(at: loc.tab)
+        guard let loc = location(of: id), groups.contains(where: { $0.id == groupID }), groups[loc.group].id != groupID else { return }
+        // Out of the old project's panes first, or it stays drawn there.
+        removeFromSplit(id)
+        guard let from = location(of: id), let gi = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        let tab = groups[from.group].tabs.remove(at: from.tab)
         groups[gi].tabs.append(tab)
         groups[gi].isCollapsed = false
+        if selectedTabID == id { RailState.shared.noteSelection(in: self) }
     }
 
     // MARK: Groups
@@ -1639,11 +1660,14 @@ final class Store: ObservableObject {
         let name = name?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         if let name { createWorkspace(name) }
         updateGroup(groupID) { $0.workspace = name }
+        if selectedGroup?.id == groupID { RailState.shared.noteSelection(in: self) }
     }
 
     func renameWorkspace(_ old: String, to new: String) {
         let new = new.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !new.isEmpty, new != old else { return }
+        // Another workspace's name would merge the two, with no way back.
+        guard !workspaceNames.contains(new) else { NSSound.beep(); return }
         workspaceOrder = workspaceNames.map { $0 == old ? new : $0 }
         // Two names becoming one: the order keeps the first.
         var seen = Set<String>()
@@ -1651,7 +1675,7 @@ final class Store: ObservableObject {
         for index in groups.indices where groups[index].workspace == old {
             groups[index].workspace = new
             // The project a new workspace started with carries its name, and follows it.
-            if groups[index].name == old { groups[index].name = new }
+            if groups[index].name == old, Self.samePath(groups[index].directory, NSHomeDirectory()) { groups[index].name = new }
         }
         if RailState.shared.shownWorkspace == old { RailState.shared.shownWorkspace = new }
     }
@@ -1704,6 +1728,10 @@ final class Store: ObservableObject {
     /// A new session in a workspace: in the project of it last worked in, or, in a workspace
     /// with no project, in a new one in the home folder.
     func newSession(inWorkspace name: String) {
+        if let selected = selectedGroup, selected.workspace == name {
+            newTab(in: selected.id)
+            return
+        }
         if let latest = projects(inWorkspace: name).max(by: { lastActivity($0) < lastActivity($1) }) {
             newTab(in: latest.id)
             return
@@ -1744,7 +1772,10 @@ final class Store: ObservableObject {
             target = copy.id
         }
         moveTab(id, toGroup: target)
-        if let si = groups.firstIndex(where: { $0.id == source.id }), groups[si].tabs.isEmpty { groups.remove(at: si) }
+        if let si = groups.firstIndex(where: { $0.id == source.id }), groups[si].tabs.isEmpty {
+            groups.remove(at: si)
+            layouts[source.id] = nil
+        }
         if selectedTabID == id { RailState.shared.noteSelection(in: self) }
     }
 
@@ -1752,11 +1783,13 @@ final class Store: ObservableObject {
     /// `index`, or last when `index` is past the end.
     func placeTab(_ id: UUID, inGroup groupID: UUID, at index: Int) {
         guard let loc = location(of: id), let target = groups.firstIndex(where: { $0.id == groupID }) else { return }
+        if loc.group != target { removeFromSplit(id) }
         var index = index
         if loc.group == target, loc.tab < index { index -= 1 }
         let tab = groups[loc.group].tabs.remove(at: loc.tab)
         groups[target].tabs.insert(tab, at: max(0, min(index, groups[target].tabs.count)))
         groups[target].isCollapsed = false
+        if selectedTabID == id { RailState.shared.noteSelection(in: self) }
     }
 
     /// Puts a project before another, in that one's workspace, or last in `workspace` when
@@ -1831,7 +1864,11 @@ final class Store: ObservableObject {
 
     func moveGroup(_ groupID: UUID, by offset: Int) {
         guard let from = groups.firstIndex(where: { $0.id == groupID }) else { return }
-        let to = from + offset
+        // Among the projects listed with it: those of its workspace, or those on their own.
+        let workspace = groups[from].workspace
+        let step = offset < 0 ? -1 : 1
+        var to = from + step
+        while groups.indices.contains(to), groups[to].workspace != workspace { to += step }
         guard groups.indices.contains(to) else { return }
         groups.swapAt(from, to)
     }
