@@ -81,10 +81,17 @@ final class UsageMonitor: ObservableObject {
         limits = []; error = short; detail = long
     }
 
-    private func load() async {
+    /// Claude Code's token, read once and kept: every read of the Keychain item can make macOS
+    /// ask again (Claude Code rewrites the item when it refreshes its login, which resets who
+    /// may read it). Read again only when the endpoint turns the kept one down.
+    private var cachedToken: String?
+
+    private func load(retried: Bool = false) async {
         let token: String
-        switch await Task.detached(operation: Self.readToken).value {
-        case .token(let value): token = value
+        let read: Credentials
+        if let cachedToken { read = .token(cachedToken) } else { read = await Task.detached(operation: Self.readToken).value }
+        switch read {
+        case .token(let value): token = value; cachedToken = value
         case .notFound:
             return fail("No Claude login", "No Claude Code login found. Run claude, then /login with a Claude.ai plan. Click to check again.")
         case .noPlan:
@@ -105,6 +112,9 @@ final class UsageMonitor: ObservableObject {
             Self.note("status \(status)\n" + String(decoding: data.prefix(2000), as: UTF8.self))
             guard status == 200 else {
                 if status == 401 || status == 403 {
+                    // The kept token may be the one that expired: read the current one once.
+                    cachedToken = nil
+                    if !retried { return await load(retried: true) }
                     return fail("Claude login expired", "Claude Code's login no longer works. Run claude to sign in again, then click to check again.")
                 }
                 return fail("Usage unavailable", "Anthropic's usage endpoint answered \(status). Click to try again.")
