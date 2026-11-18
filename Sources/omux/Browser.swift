@@ -247,6 +247,8 @@ private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
 // MARK: - Panel
 
 struct BrowserPanel: View {
+    /// Redraws this panel when the selected session's output mentions new paths or URLs.
+    @ObservedObject private var mentions = Store.shared.mentions
     @EnvironmentObject var store: Store
     @ObservedObject var session: BrowserSession
     let theme: Theme

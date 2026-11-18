@@ -81,6 +81,8 @@ final class FolderWatcher {
 // MARK: - Panel
 
 struct FilePanel: View {
+    /// Redraws this panel when the selected session's output mentions new paths or URLs.
+    @ObservedObject private var mentions = Store.shared.mentions
     @EnvironmentObject var store: Store
     let root: URL
     let theme: Theme

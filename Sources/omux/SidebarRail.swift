@@ -72,7 +72,8 @@ struct ProjectRail: View {
             }
             .contextMenu { WorkspaceMenu(name: name) }
             // A project dropped here joins the workspace; a session goes with its project.
-            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget, accepts: .both, spring: { pickWorkspace(name) }) { item in
+            .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget, accepts: .both, spring: { pickWorkspace(name) },
+                               refuses: { store.isInWorkspace($0, name) }) { item in
                 store.drop(item, onWorkspace: name)
             })
         }
@@ -446,7 +447,8 @@ struct RailWorkspaceTitle: View {
         .contentShape(Rectangle())
         .contextMenu { WorkspaceMenu(name: name) }
         // A project dropped on the heading joins the workspace; a session goes with its project.
-        .modifier(DropLift(key: "title:" + name, hue: hue, target: $dropTarget, accepts: .both, lift: 1.02) { item in
+        .modifier(DropLift(key: "title:" + name, hue: hue, target: $dropTarget, accepts: .both, lift: 1.02,
+                           refuses: { store.isInWorkspace($0, name) }) { item in
             store.drop(item, onWorkspace: name)
         })
     }
@@ -805,6 +807,9 @@ struct DropLift: ViewModifier {
     /// Held over the mark a moment while dragging, it opens what the mark stands for, so the
     /// drop can be made at an exact place in its list.
     var spring: (@MainActor () -> Void)? = nil
+    /// Something it would take, but where it already is: a session over its own workspace.
+    /// The mark stays dark rather than lighting up for a drop that would do nothing.
+    var refuses: (@MainActor (ProjectDrag.Item) -> Bool)? = nil
     let take: @MainActor (ProjectDrag.Item) -> Void
 
     func body(content: Content) -> some View {
@@ -812,7 +817,7 @@ struct DropLift: ViewModifier {
             .scaleEffect(target == key ? lift : 1)
             .shadow(color: hue.opacity(target == key ? 0.6 : 0), radius: 8)
             .animation(.spring(response: 0.25, dampingFraction: 0.55), value: target)
-            .onDrop(of: [UTType.plainText], delegate: RailDropDelegate(key: key, target: $target, accepts: accepts, spring: spring, take: take))
+            .onDrop(of: [UTType.plainText], delegate: RailDropDelegate(key: key, target: $target, accepts: accepts, spring: spring, refuses: refuses, take: take))
     }
 }
 
@@ -823,10 +828,12 @@ private struct RailDropDelegate: DropDelegate {
     @Binding var target: String?
     let accepts: DropLift.Accepts
     let spring: (@MainActor () -> Void)?
+    let refuses: (@MainActor (ProjectDrag.Item) -> Bool)?
     let take: @MainActor (ProjectDrag.Item) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
         guard info.hasItemsConforming(to: [.plainText]), !info.hasItemsConforming(to: [.fileURL]) else { return false }
+        if let item = SidebarDrag.shared.item, let refuses, MainActor.assumeIsolated({ refuses(item) }) { return false }
         // What the sidebar is dragging is known before the drop: a mark lights only for what it takes.
         switch SidebarDrag.shared.item {
         case .project: return accepts != .sessions
@@ -857,5 +864,59 @@ private struct RailDropDelegate: DropDelegate {
             SidebarDrag.shared.item = nil
             take(item)
         }
+    }
+}
+
+/// A workspace's heading in the list layout: what the rail's mark and title are there. A click
+/// folds it; a double click renames it; its menu and drops work as on the rail.
+struct ListWorkspaceHeader: View {
+    @EnvironmentObject var store: Store
+    let name: String
+    let folded: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
+    @State private var dropTarget: String?
+
+    var body: some View {
+        let projects = store.projects(inWorkspace: name)
+        let hue = ProjectMark.hue(name)
+        let (live, stopped) = store.liveCounts(projects.flatMap(\.tabs))
+        HStack(spacing: 7) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(folded ? 0 : 90))
+                .frame(width: 10)
+            Text(ProjectMark.initials(name))
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(hue)
+                .frame(width: 20, height: 20)
+                .background(hue.opacity(0.16), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            if store.renamingWorkspace == name {
+                WorkspaceNameField(name: name)
+            } else {
+                Text(name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(projects.isEmpty ? "empty" : SessionPips.text(live: live, stopped: stopped))
+                    .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if hovering, store.renamingWorkspace != name {
+                Button { store.newSession(inWorkspace: name) } label: { Image(systemName: "plus") }
+                    .buttonStyle(IconButtonStyle(size: 18))
+                    .foregroundStyle(.secondary)
+                    .help("New session in \(name)")
+            }
+        }
+        .frame(minHeight: 26)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(count: 2) { store.renamingWorkspace = name }
+        .onTapGesture(perform: toggle)
+        .contextMenu { WorkspaceMenu(name: name) }
+        .help(folded ? "Show \(name)'s projects" : "Fold \(name)")
+        .modifier(DropLift(key: "list:" + name, hue: hue, target: $dropTarget, accepts: .both, lift: 1.02,
+                           refuses: { store.isInWorkspace($0, name) }) { item in
+            store.drop(item, onWorkspace: name)
+        })
     }
 }

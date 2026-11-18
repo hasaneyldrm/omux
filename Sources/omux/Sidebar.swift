@@ -11,9 +11,20 @@ enum SidebarRow: Identifiable, Hashable {
     case shells(groupID: UUID, tabs: [TabItem], expanded: Bool)
     /// Projects with nothing running folded into one row at the bottom.
     case projects(groups: [TabGroup], expanded: Bool)
+    /// A workspace's heading in the list layout, its projects below it.
+    case workspace(String)
+    /// Over the projects on their own, when workspaces come before them.
+    case looseHeading
 
     var id: UUID {
         switch self {
+        case .looseHeading:
+            return UUID(uuidString: "00000000-0000-0000-0000-00000001005e")!
+        case .workspace(let name):
+            // From the name, the same on every redraw (not hashValue, which changes per launch).
+            var a: UInt64 = 0xcbf29ce484222325, b: UInt64 = 0x84222325cbf29ce4
+            for byte in ("workspace:" + name).utf8 { a = (a ^ UInt64(byte)) &* 0x100000001b3; b = (b &+ UInt64(byte)) &* 0x9e3779b97f4a7c15 }
+            return withUnsafeBytes(of: (a, b)) { UUID(uuid: $0.load(as: uuid_t.self)) }
         case .group(let g): return g.id
         case .tab(let t, _), .nested(let t, _): return t.id
         case .shells(let g, _, _):
@@ -34,6 +45,8 @@ struct Sidebar: View {
     @State private var expandedShells: Set<UUID> = []
     /// Idle projects listed instead of stacked.
     @State private var expandedProjects = false
+    /// Workspaces folded to their heading in the list layout.
+    @State private var foldedWorkspaces: Set<String> = []
     /// "rail": projects on a narrow strip of initials, with one project's sessions listed beside
     /// it. "list": every project and its sessions in one list.
     @AppStorage(Prefs.sidebarLayout) private var layout = "rail"
@@ -65,12 +78,21 @@ struct Sidebar: View {
     /// while it is prompted; drags and Move Up/Down hold), then the idle ones; two or more idle projects fold into one row at the bottom. Within a project, two or more idle shells fold into one
     /// row, so agents stay in view. The flat list lets native drag reorder and move sessions.
     private var rows: [SidebarRow] {
+        // Workspaces first, in their rail order, each a heading over its projects; the projects
+        // on their own follow as before.
+        var rows: [SidebarRow] = []
+        for name in store.workspaceNames {
+            rows.append(.workspace(name))
+            if !foldedWorkspaces.contains(name) { rows += store.projects(inWorkspace: name).flatMap(groupRows) }
+        }
+        let loose = store.groups.filter { $0.workspace == nil }
+        if !rows.isEmpty, !loose.isEmpty { rows.append(.looseHeading) }
         // Pinned projects first, in their order; then the rest of the active ones in theirs.
-        let working = store.groups.filter { store.isActive($0) }
+        let working = loose.filter { store.isActive($0) }
         let active = working.filter(\.pinned) + working.filter { !$0.pinned }
         // Idle projects most recently used first, so the one you'll come back to is on top.
-        let idle = store.groups.filter { !store.isActive($0) }.sorted { store.lastActivity($0) > store.lastActivity($1) }
-        var rows = active.flatMap(groupRows)
+        let idle = loose.filter { !store.isActive($0) }.sorted { store.lastActivity($0) > store.lastActivity($1) }
+        rows += active.flatMap(groupRows)
         if idle.count >= 2 {
             // Clicking never reorders: a selected session inside the stack opens the stack instead.
             let holdsSelection = idle.contains { group in group.tabs.contains { $0.id == store.selectedTabID } }
@@ -287,6 +309,24 @@ extension Sidebar {
                 if case .session = item { return .endOfProject(groupID) }
                 return nil
             }, perform: perform))
+        case .looseHeading:
+            Text("Projects")
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 14)
+                .padding(.bottom, 2)
+                .padding(.horizontal, 14)
+                .overlay(alignment: .top) { Rectangle().fill(.primary.opacity(0.07)).frame(height: 1).padding(.horizontal, 14).padding(.top, 4) }
+        case .workspace(let name):
+            ListWorkspaceHeader(name: name, folded: foldedWorkspaces.contains(name)) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    if foldedWorkspaces.contains(name) { foldedWorkspaces.remove(name) } else { foldedWorkspaces.insert(name) }
+                }
+            }
+            .padding(.top, 6)
+            .padding(.horizontal, 10)
         case .projects(let groups, let expanded):
             StackRow(title: "Idle projects", count: groups.count, expanded: expanded) { expandedProjects.toggle() }
                 .padding(.top, 6)
@@ -543,6 +583,15 @@ private struct ListDropDelegate: DropDelegate {
 }
 
 extension Store {
+    /// Whether a dragged project or session is already in the workspace: dropped there it would
+    /// do nothing, so the workspace doesn't offer to take it.
+    func isInWorkspace(_ item: ProjectDrag.Item, _ name: String) -> Bool {
+        switch item {
+        case .project(let id): return groups.first { $0.id == id }?.workspace == name
+        case .session(let id): return group(containing: id)?.workspace == name
+        }
+    }
+
     /// A project or a session dropped on a workspace: the project joins it, the session goes to
     /// the project of it last worked in.
     func drop(_ item: ProjectDrag.Item, onWorkspace name: String) {
@@ -994,8 +1043,6 @@ struct GroupMenu: View {
             Button("New Workspace") {
                 let name = store.newWorkspace(with: group.id)
                 RailState.shared.showWorkspace(name, in: store)
-                // Named in place only where workspaces show: on the rail.
-                if UserDefaults.standard.string(forKey: Prefs.sidebarLayout) ?? "rail" != "rail" { store.renamingWorkspace = nil }
             }
             if group.workspace != nil {
                 Button("Take Out of Workspace") { store.setWorkspace(group.id, nil) }

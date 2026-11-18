@@ -85,10 +85,18 @@ final class Store: ObservableObject {
     @Published var showWelcome = false
     /// A file the user ⌘-clicked in a terminal; the files panel shows it.
     @Published var previewRequest: String?
-    /// File paths mentioned in the selected session's output, newest last.
-    @Published private(set) var mentionedPaths: [String] = []
-    /// Local server URLs (localhost, …) in the selected session's output, newest last.
-    @Published private(set) var mentionedURLs: [String] = []
+    /// Paths and local URLs in the selected session's output. Their own object, watched only
+    /// by the files and browser panels: published on the Store, a streaming agent printing
+    /// paths redrew the whole sidebar every few seconds.
+    final class Mentions: ObservableObject {
+        /// File paths mentioned in the selected session's output, newest last.
+        @Published fileprivate(set) var paths: [String] = []
+        /// Local server URLs (localhost, …) in the selected session's output, newest last.
+        @Published fileprivate(set) var urls: [String] = []
+    }
+    let mentions = Mentions()
+    var mentionedPaths: [String] { mentions.paths }
+    var mentionedURLs: [String] { mentions.urls }
     /// The project a "New Session in Worktree" sheet is open for.
     @Published var newWorktreeGroupID: UUID?
     var newWorktreeProvider: SessionProvider?
@@ -650,7 +658,7 @@ final class Store: ObservableObject {
 
     /// Rescans the selected session's scrollback for file paths and local URLs (background, cheap).
     func scanMentionedPaths() {
-        guard let id = selectedTabID, let view = terminals[id] else { mentionedPaths = []; mentionedURLs = []; mentionScan = nil; return }
+        guard let id = selectedTabID, let view = terminals[id] else { mentions.paths = []; mentions.urls = []; mentionScan = nil; return }
         // Copying the whole scrollback is the dear part, so skip it while the screen has had no
         // new output since the last scan of this session. Every 30 seconds it runs anyway, for
         // a file that appeared or went away without a word on the screen.
@@ -664,8 +672,8 @@ final class Store: ObservableObject {
                 (TermView.mentionedPaths(in: text), TermView.mentionedLocalURLs(in: text))
             }.value
             guard let self, self.selectedTabID == id else { return }
-            if self.mentionedPaths != paths { self.mentionedPaths = paths }
-            if self.mentionedURLs != urls { self.mentionedURLs = urls }
+            if self.mentions.paths != paths { self.mentions.paths = paths }
+            if self.mentions.urls != urls { self.mentions.urls = urls }
         }
     }
 
