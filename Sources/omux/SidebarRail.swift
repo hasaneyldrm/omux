@@ -8,7 +8,6 @@ import UniformTypeIdentifiers
 /// The strip of project marks, with the app's own buttons at its foot.
 struct ProjectRail: View {
     @EnvironmentObject var store: Store
-    @Environment(\.openWindow) private var openWindow
     let shownID: UUID?
     let theme: Theme
     /// Open while the pointer rests on the strip: every project by name, over the list. The
@@ -165,7 +164,8 @@ struct ProjectRail: View {
                 VStack(spacing: 2) {
                     Button { store.showRecentSessions = true } label: { Image(systemName: "clock.arrow.circlepath") }
                         .help("Open recent conversation (⇧⌘O)")
-                    Button { openWindow(id: "stats") } label: { Image(systemName: "chart.bar.xaxis") }
+                    Button { store.showStats.toggle() } label: { Image(systemName: "chart.bar.xaxis") }
+                        .foregroundStyle(store.showStats ? .primary : .secondary)
                         .help("Statistics (⇧⌘Y)")
                     SettingsLink { Image(systemName: "gearshape") }
                         .help("Settings (⌘,)")
