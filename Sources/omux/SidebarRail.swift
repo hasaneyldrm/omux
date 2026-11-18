@@ -71,8 +71,7 @@ struct ProjectRail: View {
                 pickWorkspace(name)
             }
             .contextMenu { WorkspaceMenu(name: name) }
-            // A project dropped here joins the workspace; a session goes to the project of it
-            // last worked in.
+            // A project dropped here joins the workspace; a session goes with its project.
             .modifier(DropLift(key: entry.id, hue: ProjectMark.hue(name), target: $dropTarget, accepts: .both, spring: { pickWorkspace(name) }) { item in
                 store.drop(item, onWorkspace: name)
             })
@@ -446,8 +445,7 @@ struct RailWorkspaceTitle: View {
         .overlay(alignment: .bottom) { Rectangle().fill(.primary.opacity(0.07)).frame(height: 1).padding(.horizontal, 14) }
         .contentShape(Rectangle())
         .contextMenu { WorkspaceMenu(name: name) }
-        // A project dropped on the heading joins the workspace; a session goes to the project
-        // of it last worked in.
+        // A project dropped on the heading joins the workspace; a session goes with its project.
         .modifier(DropLift(key: "title:" + name, hue: hue, target: $dropTarget, accepts: .both, lift: 1.02) { item in
             store.drop(item, onWorkspace: name)
         })
@@ -507,39 +505,28 @@ struct WorkspaceSetup: View {
     var body: some View {
         // Projects on their own first: they are the likely ones to bring in.
         let others = store.groups.filter { $0.workspace == nil } + store.groups.filter { $0.workspace != nil && $0.workspace != name }
-        let open = empty || expanded
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 2) {
+            // Nothing to read through first: the actions the workspace has, as quiet rows.
             if empty {
-                Text("Add projects to this workspace")
-                    .font(.system(size: 12, weight: .semibold))
-                    .padding(.horizontal, 6)
-                Text("Click a project to move it here.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .padding(.horizontal, 6)
-                    .padding(.bottom, 2)
-            } else {
+                SetupButton(title: "New session", systemImage: "plus.bubble") { store.newSession(inWorkspace: name) }
+            }
+            if !others.isEmpty {
                 SetupButton(title: "Add project", systemImage: expanded ? "chevron.down" : "plus") {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { expanded.toggle() }
                 }
-            }
-            if open {
-                VStack(spacing: 1) {
-                    ForEach(others) { group in AddProjectRow(group: group, workspace: name) }
-                }
-                SetupButton(title: "Open a folder as a project…", systemImage: "folder.badge.plus") {
-                    store.newGroup(inWorkspace: name)
-                }
-                if empty {
-                    SetupButton(title: "Delete workspace", systemImage: "trash", tint: .red) {
-                        store.ungroupWorkspace(name)
+                if expanded {
+                    VStack(spacing: 1) {
+                        ForEach(others) { group in AddProjectRow(group: group, workspace: name) }
                     }
+                    .padding(.leading, 8)
                 }
+            }
+            SetupButton(title: "Open folder as project…", systemImage: "folder.badge.plus") {
+                store.newGroup(inWorkspace: name)
             }
         }
         .padding(.horizontal, 8)
-        .padding(.top, empty ? 10 : 8)
+        .padding(.top, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: name) { _, _ in expanded = false }
     }
@@ -674,7 +661,8 @@ struct WorkspaceMenu: View {
     let name: String
 
     var body: some View {
-        Button("New Project in \(name)…") { store.newGroup(inWorkspace: name) }
+        Button("New Session in \(name)") { store.newSession(inWorkspace: name) }
+        Button("Open Folder as Project in \(name)…") { store.newGroup(inWorkspace: name) }
         let others = store.groups.filter { $0.workspace != name }
         if !others.isEmpty {
             Menu("Add Project") {

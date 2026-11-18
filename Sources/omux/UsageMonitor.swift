@@ -62,20 +62,6 @@ final class UsageMonitor: ObservableObject {
         Task { await load() }
     }
 
-    private struct Response: Decodable {
-        struct Entry: Decodable {
-            struct Scope: Decodable {
-                struct Model: Decodable { let display_name: String? }
-                let model: Model?
-            }
-            let kind: String
-            let percent: Int
-            let resets_at: String?
-            let scope: Scope?
-        }
-        let limits: [Entry]
-    }
-
     private enum Credentials { case token(String), notFound, noPlan, denied(String) }
 
     private func fail(_ short: String, _ long: String) {
@@ -106,25 +92,52 @@ final class UsageMonitor: ObservableObject {
                 }
                 return fail("Usage unavailable", "Anthropic's usage endpoint answered \(status). Click to try again.")
             }
-            let decoded = try JSONDecoder().decode(Response.self, from: data)
-            let iso = ISO8601DateFormatter()
-            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            limits = decoded.limits.map { entry in
-                let label: String
-                switch entry.kind {
-                case "session": label = "5h"
-                case "weekly_all": label = "Week"
-                default: label = entry.scope?.model?.display_name ?? entry.kind
-                }
-                return Limit(id: entry.kind + (entry.scope?.model?.display_name ?? ""),
-                             label: label,
-                             percent: entry.percent,
-                             resetsAt: entry.resets_at.flatMap { iso.date(from: $0) })
+            guard let parsed = Self.parse(data) else {
+                return fail("Usage unavailable", "Anthropic's usage endpoint answered in a form omux doesn't read. Click to try again.")
             }
+            limits = parsed
             error = nil; detail = nil
         } catch {
             fail("Usage unavailable", "Couldn't reach Anthropic's usage endpoint: \(error.localizedDescription). Click to try again.")
         }
+    }
+
+    /// The endpoint has answered in two forms: a `limits` list, and one object per window
+    /// (`five_hour`, `seven_day`, `seven_day_opus`…) with a `utilization` from 0 to 100. Both
+    /// are read; anything else is nil.
+    nonisolated static func parse(_ data: Data) -> [Limit]? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        func percent(_ value: Any?) -> Int? {
+            if let n = value as? NSNumber { return Int(n.doubleValue.rounded()) }
+            if let s = value as? String, let d = Double(s) { return Int(d.rounded()) }
+            return nil
+        }
+        if let entries = json["limits"] as? [[String: Any]] {
+            let limits = entries.compactMap { entry -> Limit? in
+                guard let kind = entry["kind"] as? String, let value = percent(entry["percent"] ?? entry["utilization"]) else { return nil }
+                let model = ((entry["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String
+                let label = kind == "session" ? "5h" : kind == "weekly_all" ? "Week" : model ?? kind
+                return Limit(id: kind + (model ?? ""), label: label, percent: value, resetsAt: date(entry["resets_at"]))
+            }
+            return limits.isEmpty ? nil : limits
+        }
+        let windows: [(key: String, label: String)] = [
+            ("five_hour", "5h"), ("seven_day", "Week"), ("seven_day_opus", "Opus"), ("seven_day_sonnet", "Sonnet"),
+        ]
+        let limits = windows.compactMap { window -> Limit? in
+            guard let entry = json[window.key] as? [String: Any], let value = percent(entry["utilization"] ?? entry["percent"]) else { return nil }
+            return Limit(id: window.key, label: window.label, percent: value, resetsAt: date(entry["resets_at"]))
+        }
+        return limits.isEmpty ? nil : limits
+    }
+
+    /// ISO 8601 with or without fractional seconds, of any length ("…59.943648+00:00").
+    nonisolated static func date(_ value: Any?) -> Date? {
+        guard var text = value as? String, !text.isEmpty else { return nil }
+        let plain = ISO8601DateFormatter()
+        if let date = plain.date(from: text) { return date }
+        if let range = text.range(of: #"\.\d+"#, options: .regularExpression) { text.removeSubrange(range) }
+        return plain.date(from: text)
     }
 
     /// Reads the token the way Claude Code stores it, through /usr/bin/security, which is

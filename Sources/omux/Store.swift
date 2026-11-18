@@ -1648,7 +1648,11 @@ final class Store: ObservableObject {
         // Two names becoming one: the order keeps the first.
         var seen = Set<String>()
         workspaceOrder = workspaceOrder.filter { seen.insert($0).inserted }
-        for index in groups.indices where groups[index].workspace == old { groups[index].workspace = new }
+        for index in groups.indices where groups[index].workspace == old {
+            groups[index].workspace = new
+            // The project a new workspace started with carries its name, and follows it.
+            if groups[index].name == old { groups[index].name = new }
+        }
         if RailState.shared.shownWorkspace == old { RailState.shared.shownWorkspace = new }
     }
 
@@ -1678,6 +1682,9 @@ final class Store: ObservableObject {
 
     /// A new workspace, made at once under a name that is free, its name then typed in place in
     /// the list beside the rail: no window over the app. With a project, the project goes in it.
+    /// Without one, it starts working right away: a project in the home folder, under the
+    /// workspace's name, with a new session running and waiting. Its folder is changed later
+    /// with Edit Project.
     @discardableResult
     func newWorkspace(with groupID: UUID? = nil) -> String {
         let taken = Set(workspaceNames)
@@ -1685,9 +1692,60 @@ final class Store: ObservableObject {
         var number = 2
         while taken.contains(name) { name = "New Workspace \(number)"; number += 1 }
         createWorkspace(name)
-        if let groupID { setWorkspace(groupID, name) }
+        if let groupID {
+            setWorkspace(groupID, name)
+        } else {
+            newSession(inWorkspace: name)
+        }
         renamingWorkspace = name
         return name
+    }
+
+    /// A new session in a workspace: in the project of it last worked in, or, in a workspace
+    /// with no project, in a new one in the home folder.
+    func newSession(inWorkspace name: String) {
+        if let latest = projects(inWorkspace: name).max(by: { lastActivity($0) < lastActivity($1) }) {
+            newTab(in: latest.id)
+            return
+        }
+        var group = TabGroup(name: name, directory: NSHomeDirectory(), tabs: [TabItem(name: "Session 1")])
+        group.workspace = name
+        groups.append(group)
+        // The session waits for its first message: in the home folder the agent doesn't start
+        // on its own (macOS would ask for Documents, Downloads… in omux's name). That is the
+        // point here, so no notice asks for a folder.
+        folderNoticed.insert(group.id)
+        makeTerminal(tab: group.tabs[0], group: group)
+        selectedTabID = group.tabs[0].id
+        RailState.shared.shownGroupID = group.id
+        RailState.shared.shownWorkspace = name
+    }
+
+    /// A session carried to another workspace goes with its project, so it keeps its folder
+    /// and settings: into that workspace's project for the same folder, or a copy of its project
+    /// made there. A project the move leaves empty goes.
+    func moveSession(_ id: UUID, toWorkspace name: String) {
+        guard let loc = location(of: id) else { return }
+        let source = groups[loc.group]
+        guard source.workspace != name else { return }
+        let target: UUID
+        if let match = groups.first(where: { $0.workspace == name && $0.host == source.host && Self.samePath($0.directory, source.directory ?? "~") }) {
+            target = match.id
+        } else {
+            var copy = source
+            copy.id = UUID()
+            copy.tabs = []
+            copy.workspace = name
+            copy.pinned = false
+            copy.forcedIdle = false
+            copy.isCollapsed = false
+            createWorkspace(name)
+            groups.append(copy)
+            target = copy.id
+        }
+        moveTab(id, toGroup: target)
+        if let si = groups.firstIndex(where: { $0.id == source.id }), groups[si].tabs.isEmpty { groups.remove(at: si) }
+        if selectedTabID == id { RailState.shared.noteSelection(in: self) }
     }
 
     /// Puts a session in a project at a place among its sessions: before the session at

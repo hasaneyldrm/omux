@@ -39,27 +39,46 @@ struct UsageView: View {
         return name + " limits\n" + limits.map { "\($0.label) \($0.percent)% used" + ($0.resetShort.map { ", resets in \($0)" } ?? "") }.joined(separator: "\n")
     }
 
-    /// One ring a limit, the first outermost, each filled as far as the limit is used.
+    /// On the rail: each limit as its percentage over a hairline bar, "5h" and "Week" first, so
+    /// how much is left reads at a glance without opening anything. Open, the reset times
+    /// follow beside it. A click checks again.
     private var rings: some View {
-        HStack(spacing: 9) {
-            ZStack {
-                ForEach(Array(limits.prefix(3).enumerated()), id: \.element.id) { index, limit in
-                    let inset = CGFloat(index) * 3.5
-                    Circle().stroke(.primary.opacity(0.1), lineWidth: 2).padding(inset)
-                    Circle().trim(from: 0, to: max(0.03, CGFloat(min(limit.percent, 100)) / 100))
-                        .stroke(limit.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .padding(inset)
+        let shown = Array(limits.prefix(2))
+        return HStack(alignment: .top, spacing: 9) {
+            VStack(spacing: 5) {
+                if shown.isEmpty {
+                    // Nothing read yet, or it failed: say so instead of an empty shape.
+                    Image(systemName: (isCodex ? codex.usageError : monitor.error) == nil ? "gauge.with.dots.needle.33percent" : "exclamationmark.triangle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .frame(height: 22)
                 }
-                if limits.isEmpty { Circle().stroke(.primary.opacity(0.1), lineWidth: 2) }
+                ForEach(shown) { limit in
+                    VStack(spacing: 1.5) {
+                        Text(limit.label)
+                            .font(.system(size: 7.5, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .textCase(.uppercase)
+                        Text("\(limit.percent)%")
+                            .font(.system(size: 10.5, weight: .bold).monospacedDigit())
+                            .foregroundStyle(limit.percent >= 90 ? Palette.error : limit.percent >= 70 ? Palette.needs : .primary.opacity(0.85))
+                            .minimumScaleFactor(0.7)
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.primary.opacity(0.1))
+                            Capsule().fill(limit.tint).frame(width: max(2, 26 * CGFloat(min(limit.percent, 100)) / 100))
+                        }
+                        .frame(width: 26, height: 2.5)
+                    }
+                }
             }
-            .frame(width: 18, height: 18)
-            .padding(6)
+            .lineLimit(1)
+            .frame(width: 30)
+            .padding(.vertical, 4)
             .contentShape(Rectangle())
             .onTapGesture { if isCodex { Task { await codex.refreshUsage() } } else { monitor.refresh() } }
-            .help(railOpen ? "" : summary)
+            .help(railOpen ? "" : (limits.isEmpty ? (isCodex ? codex.usageError : monitor.detail) ?? summary : summary))
             if railOpen {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 3) {
                     if limits.isEmpty {
                         Text((isCodex ? codex.usageError : monitor.error) ?? "Loading limits…").foregroundStyle(.secondary)
                     }
@@ -69,12 +88,13 @@ struct UsageView: View {
                             Text("\(limit.percent)%")
                                 .fontWeight(.medium)
                                 .foregroundStyle(limit.percent >= 90 ? Palette.error : limit.percent >= 70 ? Palette.needs : .primary.opacity(0.85))
-                            if let reset = limit.resetShort { Text(reset).foregroundStyle(.tertiary) }
+                            if let reset = limit.resetShort { Text("· \(reset)").foregroundStyle(.tertiary) }
                         }
                     }
                 }
                 .font(.system(size: 10).monospacedDigit())
                 .lineLimit(1)
+                .padding(.top, 4)
                 Spacer(minLength: 0)
             }
         }

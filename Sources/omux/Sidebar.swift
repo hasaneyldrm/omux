@@ -180,9 +180,10 @@ struct Sidebar: View {
             HStack(spacing: 2) {
                 Spacer()
                 Button {
-                    if let name = shownWorkspace, store.projects(inWorkspace: name).isEmpty {
-                        // A workspace with no project yet: the first thing it needs is one.
-                        store.newGroup(inWorkspace: name)
+                    if let name = shownWorkspace {
+                        // In the project of the workspace last worked in; in an empty one, a
+                        // new project in the home folder.
+                        store.newSession(inWorkspace: name)
                     } else if let group = shownGroup, rail { store.newTab(in: group.id) } else { store.newTab() }
                 } label: { Image(systemName: "plus") }
                     .help("New session in current project (⌘T)")
@@ -553,8 +554,7 @@ extension Store {
             case .project(let id):
                 setWorkspace(id, name)
             case .session(let id):
-                let projects = projects(inWorkspace: name)
-                if let latest = projects.max(by: { lastActivity($0) < lastActivity($1) }) { moveTab(id, toGroup: latest.id) }
+                moveSession(id, toWorkspace: name)
             }
         }
     }
