@@ -82,10 +82,14 @@ final class UsageMonitor: ObservableObject {
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        // The endpoint is Claude Code's; it answers clients that say they are it.
+        request.setValue("claude-code/omux", forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            Self.note("status \(status)\n" + String(decoding: data.prefix(2000), as: UTF8.self))
             guard status == 200 else {
                 if status == 401 || status == 403 {
                     return fail("Claude login expired", "Claude Code's login no longer works. Run claude to sign in again, then click to check again.")
@@ -98,8 +102,16 @@ final class UsageMonitor: ObservableObject {
             limits = parsed
             error = nil; detail = nil
         } catch {
+            Self.note("error \(error)")
             fail("Usage unavailable", "Couldn't reach Anthropic's usage endpoint: \(error.localizedDescription). Click to try again.")
         }
+    }
+
+    /// The last answer, for finding out why limits don't show: the status and the body (which
+    /// holds no credentials; the token is never written).
+    nonisolated static func note(_ text: String) {
+        let url = Persistence.directory.appendingPathComponent("usage-last.txt")
+        try? (ISO8601DateFormatter().string(from: Date()) + "\n" + text + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     /// The endpoint has answered in two forms: a `limits` list, and one object per window
