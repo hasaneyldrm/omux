@@ -241,16 +241,14 @@ struct ProjectMark: View {
         let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
         // Not a Button for a project: on macOS a button keeps a drag from starting, and project
         // marks are dragged. A workspace's mark isn't, and is one.
+        let counts = SessionCounts(states: states, live: group.tabs.map(store.isLive))
         let face = HStack(spacing: 9) {
-            VStack(spacing: 2.5) {
-                Text(Self.initials(group.name))
-                    .font(.system(size: 11, weight: .bold))
+          VStack(spacing: 3) {
+            Text(Self.initials(group.name))
+                    .font(.system(size: 11.5, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .foregroundStyle(hue)
-                // One pip a session: filled green while it runs, an empty ring while stopped.
-                if live + stopped > 0 { SessionPips(live: live, stopped: stopped, max: 4, size: 3.5) }
-            }
                 .frame(width: 30, height: 30)
                 .background {
                     if shown {
@@ -281,10 +279,13 @@ struct ProjectMark: View {
                 .opacity(quiet && !shown && !hovering ? 0.55 : 1)
                 // A soft glow under the pointer; the mark itself stays where it is.
                 .shadow(color: hue.opacity(hovering ? 0.35 : 0), radius: hovering ? 6 : 0)
+            // How many sessions are at work, done and idle, as numbers under the tile.
+            if stack == 0, !named, counts.total > 0 { CountChips(counts: counts).opacity(quiet && !shown && !hovering ? 0.55 : 1) }
+          }
             if named {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(group.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).lineLimit(1)
-                    let doing = Self.doing(live: live, stopped: stopped, waiting: waiting, failed: failed, working: working)
+                    let doing = counts.total == 0 ? "No sessions" : counts.text
                     Text(detail.map { $0 + " · " + doing } ?? doing)
                         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -612,6 +613,50 @@ private struct AddProjectRow: View {
 
 /// A session's state at a glance, one pip each: filled green while it runs, an empty ring while
 /// it is stopped. Past `max` the last place says how many more there are.
+/// A project's sessions by what they are doing: at work (working or waiting for you), done
+/// (the agent finished its turn and is still up) and idle (stopped, or up with nothing to do).
+struct SessionCounts: Equatable {
+    var active = 0
+    var done = 0
+    var idle = 0
+    var total: Int { active + done + idle }
+
+    init(states: [TabRuntime], live: [Bool]) {
+        for (state, up) in zip(states, live) {
+            if up, state.busy || state.statusState == .working || state.statusState == .blocked || state.needsAttention { active += 1 }
+            else if up, state.statusState == .done { done += 1 }
+            else { idle += 1 }
+        }
+    }
+
+    var text: String {
+        [active > 0 ? "\(active) active" : nil, done > 0 ? "\(done) done" : nil, idle > 0 ? "\(idle) idle" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+/// The counts as small numbers side by side: blue at work, a check for done, grey idle.
+struct CountChips: View {
+    let counts: SessionCounts
+
+    var body: some View {
+        HStack(spacing: 2.5) {
+            if counts.active > 0 { Text("\(counts.active)").foregroundStyle(Palette.working) }
+            if counts.done > 0 {
+                HStack(spacing: 0.5) {
+                    Image(systemName: "checkmark").font(.system(size: 6.5, weight: .heavy))
+                    Text("\(counts.done)")
+                }
+                .foregroundStyle(.primary.opacity(0.85))
+            }
+            if counts.idle > 0 { Text("\(counts.idle)").foregroundStyle(.secondary.opacity(0.8)) }
+        }
+        .font(.system(size: 9, weight: .bold).monospacedDigit())
+        .fixedSize()
+        .help(counts.text)
+    }
+}
+
 struct SessionPips: View {
     let live: Int
     let stopped: Int

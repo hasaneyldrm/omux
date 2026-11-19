@@ -882,7 +882,7 @@ struct GroupHeader: View {
                 Button { store.newTab(in: group.id, command: "") } label: { Image(systemName: "plus").font(.system(size: 9, weight: .semibold)) }
                     .help("New shell in \(group.name)")
             } else if !group.tabs.isEmpty {
-                SessionPips(live: live, stopped: stopped, max: 6, size: 5.5)
+                CountChips(counts: SessionCounts(states: group.tabs.map { store.runtime[$0.id] ?? TabRuntime() }, live: group.tabs.map(store.isLive)))
             }
         }
         .buttonStyle(IconButtonStyle(size: 18))
