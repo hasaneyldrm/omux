@@ -1358,6 +1358,10 @@ final class Store: ObservableObject {
     private func applyStatus(_ state: TabRuntime.StatusState?, kind: String?, message: String?, children: [TabRuntime.StatusChild], for id: UUID) {
         let previous = runtime[id]?.statusState
         if state != nil { touchProject(of: id, activated: Self.startsTurn(from: previous, to: state), agentWasUp: previous != nil) }
+        // The session just given work goes first in its project: the one you're working in is on top.
+        if state == .working, previous != .working, let loc = location(of: id), loc.tab > 0 {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { placeTab(id, inGroup: groups[loc.group].id, at: 0) }
+        }
         // Subagent rows follow the session's turns: a child listed or a turn ended is worth a look.
         if previous != state || (runtime[id]?.statusChildren ?? []) != children { AgentMonitor.shared.schedulePoll() }
         update(id) {

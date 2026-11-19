@@ -443,7 +443,21 @@ struct TerminalHost: NSViewRepresentable {
         container.layer?.backgroundColor = theme.background.cgColor
         // Under a transcript the terminal keeps its size and screen but doesn't draw.
         let visible = context.environment.terminalVisible
-        if termView.isHidden == visible { termView.isHidden = !visible }
+        if termView.isHidden == visible {
+            termView.isHidden = !visible
+            // Out from under the transcript, as when a new session's agent comes up: what you
+            // type goes to the terminal without a click into it first.
+            if visible, Store.shared.selectedTabID == termView.tabID {
+                DispatchQueue.main.async {
+                    guard let window = termView.window, !termView.isHidden, window.firstResponder !== termView else { return }
+                    // A field still on screen (a rename, a search) keeps what it is typing; the
+                    // transcript's compose box has just gone with the transcript.
+                    if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor,
+                       let field = editor.delegate as? NSView, field.window != nil, !field.isHiddenOrHasHiddenAncestor { return }
+                    window.makeFirstResponder(termView)
+                }
+            }
+        }
         guard context.coordinator.currentID != termView.tabID || termView.superview !== container else { return }
         context.coordinator.currentID = termView.tabID
         container.subviews.forEach { $0.removeFromSuperview() }

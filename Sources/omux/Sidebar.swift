@@ -648,6 +648,33 @@ final class TranscriptDates {
     }
 }
 
+/// When a session was last used, for its row: "Today 14:32", "Yesterday 09:10", "Tuesday 16 Nov
+/// 14:32", in the Mac's language.
+enum LastUsed {
+    private static let relative: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.doesRelativeDateFormatting = true
+        return formatter
+    }()
+
+    static func text(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDateInToday(date) || calendar.isDateInYesterday(date) { return "\(relative.string(from: date)) \(time)" }
+        let sameYear = calendar.isDate(date, equalTo: Date(), toGranularity: .year)
+        let day = sameYear ? date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated))
+                           : date.formatted(.dateTime.day().month(.abbreviated).year())
+        return "\(day) \(time)"
+    }
+
+    /// The latest of what the app saw of the session and its conversation file.
+    @MainActor static func date(_ tab: TabItem, _ runtime: TabRuntime) -> Date? {
+        [runtime.lastActivity, TranscriptDates.shared.date(for: tab)].compactMap { $0 }.max()
+    }
+}
+
 struct TabRow: View {
     @EnvironmentObject var store: Store
     @ObservedObject private var agentSlice: AgentMonitor.Slice
@@ -676,6 +703,17 @@ struct TabRow: View {
 
     var body: some View { WithRuntime(tab.id) { _ in sessionBody } }
 
+    /// Under the name: what the agent is doing while it works, waits or failed; otherwise when
+    /// the session was last used.
+    private func subtitle(_ rt: TabRuntime, showFolder: Bool) -> String? {
+        switch rt.statusState {
+        case .working, .blocked, .error: return rt.statusLine(showFolder: showFolder)
+        default:
+            guard let date = LastUsed.date(tab, rt) else { return rt.statusLine(showFolder: showFolder) }
+            return (rt.exited ? "Stopped · " : "") + LastUsed.text(date)
+        }
+    }
+
     /// Drawn again whenever this session's live state changes; see `WithRuntime`.
     @ViewBuilder private var sessionBody: some View {
         let rt = store.runtime[tab.id] ?? TabRuntime()
@@ -690,7 +728,12 @@ struct TabRow: View {
                     .buttonStyle(IconButtonStyle(size: 16))
                     .help("Close session")
                 } else {
-                    StatusDot(color: rt.statusColor ?? tab.color.color ?? Color.secondary.opacity(0.35), pulsing: rt.statusState == .working, size: 8)
+                    // A finished turn is nothing to look at: a quiet ring, not a green light.
+                    if rt.statusState == .done {
+                        Circle().strokeBorder(Color.secondary.opacity(0.55), lineWidth: 1.5).frame(width: 8, height: 8)
+                    } else {
+                        StatusDot(color: rt.statusColor ?? tab.color.color ?? Color.secondary.opacity(0.35), pulsing: rt.statusState == .working, size: 8)
+                    }
                 }
             }
             .frame(width: 10, height: 18)
@@ -712,7 +755,7 @@ struct TabRow: View {
                 } else if let worktree = tab.worktree {
                     HStack(spacing: 3) {
                         Image(systemName: "arrow.triangle.branch").imageScale(.small)
-                        Text(([worktree.branch, rt.statusLine(showFolder: false), agentCount].compactMap { $0 })
+                        Text(([worktree.branch, subtitle(rt, showFolder: false), agentCount].compactMap { $0 })
                             .joined(separator: " · "))
                         if let stat = diffStats.stats[tab.id], !stat.isEmpty {
                             Stat(added: stat.added, removed: stat.removed).layoutPriority(1)
@@ -724,7 +767,7 @@ struct TabRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                } else if let line = [rt.statusLine(showFolder: showFolderPath), agentCount].compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
+                } else if let line = [subtitle(rt, showFolder: showFolderPath), agentCount].compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
                     Text(line)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -773,7 +816,7 @@ struct TabRow: View {
         .offset(x: hovering ? 2 : 0)
         .animation(.spring(response: 0.25, dampingFraction: 0.65), value: hovering)
         .padding(.vertical, compact ? 0 : 3)
-        .help(compact ? ([tab.worktree?.branch, rt.statusLine(showFolder: true), agentCount].compactMap { $0 }.joined(separator: " · ")) : "")
+        .help(compact ? ([tab.worktree?.branch, subtitle(rt, showFolder: true), agentCount].compactMap { $0 }.joined(separator: " · ")) : "")
         .onHover { over in
             pointerOver = over
             if over, !hoverBlocked { store.refreshBusyOnHover(tab.id) }
