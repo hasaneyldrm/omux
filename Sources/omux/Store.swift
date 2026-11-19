@@ -174,6 +174,9 @@ final class Store: ObservableObject {
             layouts[gid] = live
         }
 
+        // Sessions left as "Session N" by an earlier run get their conversation's name.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Store.shared.nameFromConversations() }
+
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             DispatchQueue.main.async {
                 if let id = Store.shared.selectedTabID { Store.shared.clearAttention(id) }
@@ -1256,6 +1259,32 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Sessions named from the first thing asked: Claude Code's title replaces it when it comes.
+    private var namedFromPrompt: Set<UUID> = []
+
+    /// Names sessions after their Claude Code conversations: those still called "Session N",
+    /// and those named from a prompt once a real title exists. All of them when `ids` is nil.
+    func nameFromConversations(_ ids: [UUID]? = nil) {
+        let targets: [(UUID, URL)] = (ids ?? groups.flatMap { $0.tabs.map(\.id) }).compactMap { id in
+            guard let tab = tab(id), tab.autoName, TabItem.isDefaultName(tab.name) || namedFromPrompt.contains(id),
+                  transcriptProvider(of: tab) == .claude, let url = claudeTranscriptURL(for: id) else { return nil }
+            return (id, url)
+        }
+        guard !targets.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            let names = targets.compactMap { id, url in WorkStats.conversationTitle(url).map { (id, $0) } }
+            await MainActor.run {
+                for (id, found) in names {
+                    guard let tab = self.tab(id), tab.autoName, TabItem.isDefaultName(tab.name) || self.namedFromPrompt.contains(id) else { continue }
+                    // A prompt never replaces a title.
+                    if found.fromPrompt, !TabItem.isDefaultName(tab.name) { continue }
+                    if found.fromPrompt { self.namedFromPrompt.insert(id) } else { self.namedFromPrompt.remove(id) }
+                    if tab.name != found.title { self.updateTab(id) { $0.name = found.title } }
+                }
+            }
+        }
+    }
+
     /// Marks a project as in use: an agent reported status. Opening a session or using its shell
     /// doesn't count. The project moves to the top of the sidebar when it is activated: an agent
     /// starts a turn in it while no agent was up in the project, or after an hour without a turn.
@@ -1358,6 +1387,9 @@ final class Store: ObservableObject {
     private func applyStatus(_ state: TabRuntime.StatusState?, kind: String?, message: String?, children: [TabRuntime.StatusChild], for id: UUID) {
         let previous = runtime[id]?.statusState
         if state != nil { touchProject(of: id, activated: Self.startsTurn(from: previous, to: state), agentWasUp: previous != nil) }
+        // A session still called "Session N" takes its name from its conversation: at once from
+        // what was asked, then Claude Code's own title once the turn is over.
+        if (state == .working && previous != .working) || (state == .done && previous != .done) { nameFromConversations([id]) }
         // The session just given work goes first in its project: the one you're working in is on top.
         if state == .working, previous != .working, let loc = location(of: id), loc.tab > 0 {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { placeTab(id, inGroup: groups[loc.group].id, at: 0) }

@@ -215,6 +215,37 @@ public enum WorkStats {
         return nil
     }
 
+    /// A name for a conversation, from its transcript: the title it was given by hand, else the
+    /// one Claude Code made up, else the start of the first thing asked (`fromPrompt`).
+    public static func conversationTitle(_ url: URL) -> (title: String, fromPrompt: Bool)? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        var custom: String?, ai: String?, prompt: String?
+        for line in data.split(separator: 0x0A) where line.count < 64 * 1024 {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { continue }
+            switch object["type"] as? String {
+            case "custom-title": custom = (object["customTitle"] as? String) ?? (object["title"] as? String) ?? custom
+            case "ai-title": ai = (object["aiTitle"] as? String) ?? ai
+            case "summary": ai = ai ?? (object["summary"] as? String)
+            case "user":
+                if prompt == nil, object["isMeta"] as? Bool != true, object["isSidechain"] as? Bool != true {
+                    prompt = promptText(object["message"])
+                }
+            default: break
+            }
+        }
+        if let title = (custom ?? ai)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return (title, false) }
+        guard let prompt, !prompt.isEmpty else { return nil }
+        return (shortened(prompt, to: 44), true)
+    }
+
+    /// At most `limit` characters, cut at a word.
+    static func shortened(_ text: String, to limit: Int) -> String {
+        guard text.count > limit else { return text }
+        let cut = text.prefix(limit)
+        let word = cut.lastIndex(of: " ").map { cut[..<$0] } ?? cut
+        return word.trimmingCharacters(in: .whitespaces.union(.punctuationCharacters)) + "…"
+    }
+
     /// What the user typed, from a user record's message: text, not tool results, slash
     /// commands or the system's own notes.
     static func promptText(_ message: Any?) -> String? {

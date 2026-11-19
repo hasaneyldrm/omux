@@ -77,3 +77,23 @@ final class WorkTokensTests: XCTestCase {
         XCTAssertEqual(session.tokens, WorkTokens(input: 1, output: 2, cacheWrite: 3, cacheRead: 4))
     }
 }
+
+final class ConversationTitleTests: XCTestCase {
+    private func write(_ lines: [String]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jsonl")
+        try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    func testTitleBeatsPromptAndPromptIsShortened() throws {
+        let prompt = #"{"type":"user","message":{"content":"kanka workspace oluşturunca sidebar bozuluyor bunu bir düzeltelim lütfen hemen"}}"#
+        let fromPrompt = try XCTUnwrap(WorkStats.conversationTitle(try write([prompt])))
+        XCTAssertTrue(fromPrompt.fromPrompt)
+        XCTAssertTrue(fromPrompt.title.hasSuffix("…"))
+        XCTAssertLessThanOrEqual(fromPrompt.title.count, 45)
+        let titled = try XCTUnwrap(WorkStats.conversationTitle(try write([prompt, #"{"type":"ai-title","aiTitle":"Sidebar düzeltmesi"}"#])))
+        XCTAssertEqual(titled.title, "Sidebar düzeltmesi")
+        XCTAssertFalse(titled.fromPrompt)
+        XCTAssertNil(WorkStats.conversationTitle(try write([#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#])))
+    }
+}
