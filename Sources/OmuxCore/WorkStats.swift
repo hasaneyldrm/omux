@@ -233,9 +233,18 @@ public enum WorkStats {
             default: break
             }
         }
-        if let title = (custom ?? ai)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return (title, false) }
-        guard let prompt, !prompt.isEmpty else { return nil }
+        if let title = (custom ?? ai).map(plain), !title.isEmpty { return (shortened(title, to: 80), false) }
+        guard let prompt = prompt.map(plain), !prompt.isEmpty else { return nil }
         return (shortened(prompt, to: 44), true)
+    }
+
+    /// One line of plain text: escape sequences and other control characters out, runs of
+    /// whitespace as one space. The transcript is written by programs, and a name is shown and
+    /// sent around.
+    static func plain(_ text: String) -> String {
+        let stripped = text.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[ -/]*[@-~]|\u{1B}\\][^\u{07}\u{1B}]*(\u{07}|\u{1B}\\\\)?", with: "", options: .regularExpression)
+        let scalars = stripped.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) }
+        return String(scalars).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
     }
 
     /// At most `limit` characters, cut at a word.

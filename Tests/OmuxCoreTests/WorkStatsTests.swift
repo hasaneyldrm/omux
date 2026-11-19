@@ -97,3 +97,10 @@ final class ConversationTitleTests: XCTestCase {
         XCTAssertNil(WorkStats.conversationTitle(try write([#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#])))
     }
 }
+
+final class PlainTitleTests: XCTestCase {
+    func testControlCharactersAndEscapesAreRemoved() {
+        XCTAssertEqual(WorkStats.plain("Fix\u{1B}[31m red\u{1B}[0m\n\tbug\u{07}"), "Fix red bug")
+        XCTAssertEqual(WorkStats.plain("a\u{1B}]0;evil title\u{07}b"), "ab")
+    }
+}
