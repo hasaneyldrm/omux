@@ -15,6 +15,8 @@ public struct TabRuntime: Equatable {
     public var lastActivity: Date?
     public var needsAttention = false
     public var exited = false
+    /// Brought back from the last launch and not started since: waiting, not ended.
+    public var dormant = false
     /// A program (e.g. claude) is running in the shell, as opposed to an idle prompt.
     public var busy = false
     public var statusState: StatusState?

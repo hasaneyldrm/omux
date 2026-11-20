@@ -710,7 +710,8 @@ struct TabRow: View {
         case .working, .blocked, .error: return rt.statusLine(showFolder: showFolder)
         default:
             guard let date = LastUsed.date(tab, rt) else { return rt.statusLine(showFolder: showFolder) }
-            return (rt.exited ? "Stopped · " : "") + LastUsed.text(date)
+            // Restored at launch and not resumed yet is paused; a program that ended is stopped.
+            return (rt.dormant ? "Paused · " : rt.exited ? "Stopped · " : "") + LastUsed.text(date)
         }
     }
 

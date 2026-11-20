@@ -216,7 +216,11 @@ final class Store: ObservableObject {
             startAllSessions()
         } else {
             // Restored tabs stay dormant until selected (shell) or played (claude).
-            for entry in allTabs { runtime[entry.tab.id] = TabRuntime(exited: true) }
+            for entry in allTabs {
+                var rt = TabRuntime(exited: true)
+                rt.dormant = true
+                runtime[entry.tab.id] = rt
+            }
         }
     }
 
@@ -507,7 +511,7 @@ final class Store: ObservableObject {
         )
         update(tab.id) {
             $0.provider = provider; $0.agentConnected = false; $0.agentConnectedAt = nil; $0.tuiReady = false
-            $0.exited = false; $0.cwd = dir; $0.title = ""
+            $0.exited = false; $0.dormant = false; $0.cwd = dir; $0.title = ""
             $0.statusState = nil; $0.statusKind = nil; $0.statusDetail = nil; $0.statusChildren = []
         }
 
@@ -557,7 +561,7 @@ final class Store: ObservableObject {
                           execName: "sh", currentDirectory: home)
         update(tab.id) {
             $0.provider = provider; $0.agentConnected = false; $0.agentConnectedAt = nil; $0.tuiReady = false
-            $0.exited = false; $0.cwd = directory; $0.title = ""
+            $0.exited = false; $0.dormant = false; $0.cwd = directory; $0.title = ""
             $0.statusState = nil; $0.statusKind = nil; $0.statusDetail = nil; $0.statusChildren = []
         }
         if provider == .claude {
