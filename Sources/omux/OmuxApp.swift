@@ -1234,5 +1234,3 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return alert
     }
 }
-
-
